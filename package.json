@@ -1,38 +1,22 @@
 {
-  "name": "tvtracker",
-  "private": true,
+  "name": "tv-show-tracker",
   "version": "1.0.0",
+  "private": true,
   "type": "module",
-  "scripts": { "build": "vite build" },
-  "dependencies": {
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "vite": "^5.4.10",
-    "lucide-react": "^0.453.0",
-    "xlsx": "^0.20.0"
-  }
-}
-"scripts": {
-  "dev": "vite",
-  "build": "vite build",
-  "preview": "vite preview"
-}
-"engines": { "node": ">=20" }
-{
-  "type": "module",
+  "engines": { "node": ">=20" },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview"
-  },
-  "devDependencies": {
-    "@vitejs/plugin-react": "^4.3.1",
-    "vite": "^5.0.0"
   },
   "dependencies": {
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "lucide-react": "^0.460.0",
     "xlsx": "^0.20.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite": "^5.4.10"
   }
 }
