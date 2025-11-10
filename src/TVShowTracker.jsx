@@ -510,104 +510,107 @@ export default function TVShowTracker() {
         <div className="max-w-6xl mx-auto">
           {/* Top bar */}
           <header className="mb-8">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <Tv className="w-8 h-8 text-purple-400" />
-                <h1 className="text-3xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
-                  TV Tracker
-                </h1>
-              </div>
+  <div className="flex items-start justify-between">
+    {/* Left: Title + Tagline */}
+    <div>
+      <div className="flex items-center gap-3">
+        <Tv className="w-8 h-8 text-purple-400" />
+        <h1 className="text-3xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
+          TV Tracker
+        </h1>
+      </div>
+      <p className="mt-1 text-slate-300">
+        Never lose track of what you&apos;re watching
+      </p>
+    </div>
 
-              {/* Hamburger */}
-              <div className="relative" ref={menuRef}>
-                <button
-                  onClick={() => setMenuOpen((v) => !v)}
-                  aria-label="Open menu"
-                  className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700"
-                >
-                  <Menu className="w-6 h-6" />
-                </button>
+    {/* Right: Hamburger menu */}
+    <div className="relative" ref={menuRef}>
+      <button
+        onClick={() => setMenuOpen(v => !v)}
+        aria-label="Open menu"
+        className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700"
+      >
+        <Menu className="w-6 h-6" />
+      </button>
 
-                {/* Dropdown */}
-                {menuOpen && (
-                  <div className="absolute right-0 mt-2 w-64 rounded-xl border border-slate-700 bg-slate-800 shadow-xl overflow-hidden z-50">
-                    <div className="px-3 py-2 text-xs text-slate-400 border-b border-slate-700">
-                      Account
-                    </div>
+      {menuOpen && (
+        <div className="absolute right-0 mt-2 w-64 rounded-xl border border-slate-700 bg-slate-800 shadow-xl overflow-hidden z-50">
 
-                    <MenuAccountItems
-                      isSignedIn={isSignedIn}
-                      userEmail={userEmail}
-                      onOpenSignIn={() => setShowSignInDialog(true)}
-                      onSignOut={async () => {
-                        const sp = await getSupabase();
-                        if (!sp) return;
-                        await sp.auth.signOut();
-                        setIsSignedIn(false);
-                        setUserEmail("");
-                      }}
-                      onSync={async () => {
-                        const sp = await getSupabase();
-                        if (!sp) return;
-                        alert("Sync is wired for Supabase; configure env vars next.");
-                      }}
-                    />
+          {/* (Optional) Account section shows only if Supabase is available */}
+          <div className="px-3 py-2 text-xs text-slate-400 border-b border-slate-700">
+            Account
+          </div>
+          <MenuAccountItems
+            isSignedIn={isSignedIn}
+            userEmail={userEmail}
+            onOpenSignIn={() => setShowSignInDialog(true)}
+            onSignOut={async () => {
+              const sp = await getSupabase();
+              if (!sp) return;
+              await sp.auth.signOut();
+              setIsSignedIn(false);
+              setUserEmail("");
+            }}
+            onSync={async () => {
+              const sp = await getSupabase();
+              if (!sp) return;
+              alert("Sync is wired for Supabase; configure env vars next.");
+            }}
+          />
 
-                    <div className="px-3 py-2 text-xs text-slate-400 border-b border-slate-700">
-                      Data
-                    </div>
+          {/* Data */}
+          <div className="px-3 py-2 text-xs text-slate-400 border-b border-slate-700">
+            Data
+          </div>
+          <label className="flex items-center gap-2 px-4 py-3 hover:bg-slate-700 cursor-pointer">
+            <Upload className="w-4 h-4" />
+            <span>Import Data (JSON)</span>
+            <input type="file" accept=".json" onChange={importData} className="hidden" />
+          </label>
+          <button
+            onClick={exportJSON}
+            disabled={myShows.length === 0}
+            className="w-full flex items-center gap-2 px-4 py-3 hover:bg-slate-700 disabled:opacity-50"
+          >
+            <Download className="w-4 h-4" />
+            <span>Export JSON</span>
+          </button>
+          <button
+            onClick={exportExcel}
+            disabled={myShows.length === 0}
+            className="w-full flex items-center gap-2 px-4 py-3 hover:bg-slate-700 disabled:opacity-50"
+          >
+            <Download className="w-4 h-4" />
+            <span>Export Excel</span>
+          </button>
 
-                    {/* Import (hidden file input) */}
-                    <label className="flex items-center gap-2 px-4 py-3 hover:bg-slate-700 cursor-pointer">
-                      <Upload className="w-4 h-4" />
-                      <span>Import Data (JSON)</span>
-                      <input type="file" accept=".json" onChange={importData} className="hidden" />
-                    </label>
+          {/* Support / Donate */}
+          <div className="px-3 py-2 text-xs text-slate-400 border-t border-slate-700">
+            Support
+          </div>
+          <a
+            href="https://paypal.me/Yelltom"   {/* ← update this */}
+            target="_blank" rel="noopener noreferrer"
+            className="flex items-center gap-2 px-4 py-3 hover:bg-slate-700"
+          >
+            <DollarSign className="w-4 h-4" />
+            Donate via PayPal
+          </a>
+          <a
+            href="https://venmo.com/u/RyanMYoung"  {/* ← and this */}
+            target="_blank" rel="noopener noreferrer"
+            className="flex items-center gap-2 px-4 py-3 hover:bg-slate-700"
+          >
+            <DollarSign className="w-4 h-4" />
+            Donate via Venmo
+          </a>
+        </div>
+      )}
+    </div>
+  </div>
+</header>
 
-                    {/* Export */}
-                    <button
-                      onClick={exportJSON}
-                      disabled={myShows.length === 0}
-                      className="w-full flex items-center gap-2 px-4 py-3 hover:bg-slate-700 disabled:opacity-50"
-                    >
-                      <Download className="w-4 h-4" />
-                      <span>Export JSON</span>
-                    </button>
-                    <button
-                      onClick={exportExcel}
-                      disabled={myShows.length === 0}
-                      className="w-full flex items-center gap-2 px-4 py-3 hover:bg-slate-700 disabled:opacity-50"
-                    >
-                      <Download className="w-4 h-4" />
-                      <span>Export Excel</span>
-                    </button>
-
-                    {/* Donate */}
-                    <div className="px-3 py-2 text-xs text-slate-400 border-t border-slate-700">
-                      Support
-                    </div>
-                    <a
-                      href="https://paypal.me/YOUR_PAYPAL_HANDLE"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center gap-2 px-4 py-3 hover:bg-slate-700"
-                    >
-                      <DollarSign className="w-4 h-4" />
-                      Donate via PayPal
-                    </a>
-                    <a
-                      href="https://venmo.com/u/YOUR_VENMO_HANDLE"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center gap-2 px-4 py-3 hover:bg-slate-700"
-                    >
-                      <DollarSign className="w-4 h-4" />
-                      Donate via Venmo
-                    </a>
-                  </div>
-                )}
-              </div>
-            </div>
           </header>
 
           {/* Search */}
