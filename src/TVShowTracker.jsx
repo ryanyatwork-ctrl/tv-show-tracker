@@ -590,7 +590,7 @@ export default function TVShowTracker() {
             Support
           </div>
           <a
-            href="https://paypal.me/Yelltom"   {/* ← update this */}
+            href="https://paypal.me/Yelltom"  
             target="_blank" rel="noopener noreferrer"
             className="flex items-center gap-2 px-4 py-3 hover:bg-slate-700"
           >
@@ -598,7 +598,7 @@ export default function TVShowTracker() {
             Donate via PayPal
           </a>
           <a
-            href="https://venmo.com/u/RyanMYoung"  {/* ← and this */}
+            href="https://venmo.com/u/RyanMYoung"
             target="_blank" rel="noopener noreferrer"
             className="flex items-center gap-2 px-4 py-3 hover:bg-slate-700"
           >
