@@ -179,7 +179,8 @@ export default function TVShowTracker() {
               const isOpen = expandedShow === show.id;
               return (
                 <article key={show.id}
-                  className="bg-zinc-900 rounded-lg overflow-hidden border border-zinc-800">
+                  className=`bg-zinc-900 rounded-lg overflow-hidden border border-zinc-800
+              ${pct === 100 ? 'ring-2 ring-green-500/50 shadow-green-500/20' : ''}`}
                   {show.image && (
                     <img src={show.image} alt={show.name}
                          className="w-full h-40 object-cover" loading="lazy" />
@@ -205,10 +206,15 @@ export default function TVShowTracker() {
                         <span>Progress</span>
                         <span>{watched}/{total} ({pct}%)</span>
                       </div>
-                      <div className="h-2 bg-zinc-800 rounded">
-                        <div className="h-2 bg-purple-600 rounded" style={{ width: `${pct}%` }} />
-                      </div>
-                    </div>
+                       <div className="h-2 bg-zinc-800 rounded">
+                        <div
+                        className={`h-2 rounded transition-[width,background-color] duration-300
+                                    ${pct === 100 ? 'bg-green-600' : 'bg-purple-600'}`}
+                        style={{ width: `${pct}%` }}
+                    />
+                  </div>
+
+
 
                     {/* Source */}
                     <div className="mt-3">
