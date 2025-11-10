@@ -498,7 +498,7 @@ export default function TVShowTracker() {
                   Support
                 </div>
                 <a
-                  href="https://paypal.me/Yellom"
+                  href="https://paypal.me/Yelltom"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex items-center gap-2 px-4 py-3 hover:bg-slate-700"
