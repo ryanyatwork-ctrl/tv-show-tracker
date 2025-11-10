@@ -13,6 +13,7 @@ import {
   CheckCircle,
 } from "lucide-react";
 import * as XLSX from "xlsx";
+import { getSupabase } from "./lib/supabase"; // <— NEW
 
 /**
  * TVShowTracker
@@ -24,6 +25,64 @@ import * as XLSX from "xlsx";
  * - Sort by: added/title/year/genre
  * - Progress bar switches purple->green at 100%
  */
+
+function MenuAccountItems({ isSignedIn, userEmail, onOpenSignIn, onSignOut, onSync }) {
+  const [supabaseAvailable, setSupabaseAvailable] = React.useState(false);
+  useEffect(() => {
+    (async () => setSupabaseAvailable(!!(await getSupabase())))();
+  }, []);
+
+  if (!supabaseAvailable) return null;
+
+  return (
+    <>
+      {!isSignedIn ? (
+        <button
+          onClick={onOpenSignIn}
+          className="w-full flex items-center gap-2 px-4 py-3 hover:bg-slate-700"
+        >
+          <LogIn className="w-4 h-4" />
+          <span>Sign in (email link)</span>
+        </button>
+      ) : (
+        <>
+          <div className="px-4 py-2 text-sm text-slate-300">{userEmail}</div>
+          <button
+            onClick={onSync}
+            className="w-full flex items-center gap-2 px-4 py-3 hover:bg-slate-700"
+          >
+            <RefreshCw className="w-4 h-4" />
+            <span>Sync now</span>
+          </button>
+          <button
+            onClick={onSignOut}
+            className="w-full flex items-center gap-2 px-4 py-3 hover:bg-slate-700"
+          >
+            <LogOut className="w-4 h-4" />
+            <span>Sign out</span>
+          </button>
+        </>
+      )}
+    </>
+  );
+}
+useEffect(() => {
+  (async () => {
+    const sp = await getSupabase();
+    if (!sp) return;
+    const { data: { session } } = await sp.auth.getSession();
+    if (session?.user) {
+      setIsSignedIn(true);
+      setUserEmail(session.user.email || "");
+    }
+    sp.auth.onAuthStateChange((_evt, ses) => {
+      const present = !!ses?.user;
+      setIsSignedIn(present);
+      setUserEmail(present ? (ses.user.email || "") : "");
+    });
+  })();
+}, []);
+
 export default function TVShowTracker() {
   // ---------- Persistence ----------
   const [myShows, setMyShows] = useState(() => {
@@ -55,6 +114,12 @@ export default function TVShowTracker() {
   const [sortBy, setSortBy] = useState("added"); // added | title | year | genre
 
   // ---------- Helpers ----------
+  const [menuOpen, setMenuOpen] = useState(false);
+const [isSignedIn, setIsSignedIn] = useState(false);
+const [userEmail, setUserEmail] = useState("");
+const [showSignInDialog, setShowSignInDialog] = useState(false);
+const menuRef = useRef(null);
+
   const isShowAdded = (id) => myShows.some((s) => s.id === id);
 
   const getCurrentWatchData = (show) => {
@@ -133,6 +198,14 @@ export default function TVShowTracker() {
     const t = setTimeout(() => doSearch(searchQuery), 450);
     return () => clearTimeout(t);
   }, [searchQuery]);
+  useEffect(() => {
+  function onDocClick(e) {
+    if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false);
+  }
+  document.addEventListener("click", onDocClick);
+  return () => document.removeEventListener("click", onDocClick);
+}, []);
+
 
   // ---------- Add shows ----------
   const toggleShowSelection = (id) => {
@@ -342,6 +415,116 @@ export default function TVShowTracker() {
   const exportExcel = () => {
     const wb = XLSX.utils.book_new();
 
+{/* Top bar */}
+<header className="mb-8">
+  <div className="flex items-center justify-between">
+    <div className="flex items-center gap-3">
+      <Tv className="w-8 h-8 text-purple-400" />
+      <h1 className="text-3xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
+        TV Tracker
+      </h1>
+    </div>
+
+    {/* Hamburger */}
+    <div className="relative" ref={menuRef}>
+      <button
+        onClick={() => setMenuOpen(v => !v)}
+        aria-label="Open menu"
+        className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700"
+      >
+        <Menu className="w-6 h-6" />
+      </button>
+
+      {/* Dropdown */}
+      {menuOpen && (
+        <div className="absolute right-0 mt-2 w-64 rounded-xl border border-slate-700 bg-slate-800 shadow-xl overflow-hidden z-50">
+          {/* (Optional) account section */}
+          <div className="px-3 py-2 text-xs text-slate-400 border-b border-slate-700">
+            Account
+          </div>
+
+          {/* Sign in / Sign out items appear only if Supabase is configured */}
+          <MenuAccountItems
+            isSignedIn={isSignedIn}
+            userEmail={userEmail}
+            onOpenSignIn={() => setShowSignInDialog(true)}
+            onSignOut={async () => {
+              const sp = await getSupabase();
+              if (!sp) return;
+              await sp.auth.signOut();
+              setIsSignedIn(false);
+              setUserEmail("");
+            }}
+            onSync={async () => {
+              const sp = await getSupabase();
+              if (!sp) return;
+              // TODO: hook up cloud sync here (pull + push). Safe no-op for now.
+              alert("Sync is wired for Supabase; configure env vars next.");
+            }}
+          />
+
+          <div className="px-3 py-2 text-xs text-slate-400 border-b border-slate-700">
+            Data
+          </div>
+
+          {/* Import (hidden file input) */}
+          <label className="flex items-center gap-2 px-4 py-3 hover:bg-slate-700 cursor-pointer">
+            <Upload className="w-4 h-4" />
+            <span>Import Data (JSON)</span>
+            <input
+              type="file"
+              accept=".json"
+              onChange={importData}
+              className="hidden"
+            />
+          </label>
+
+          {/* Export */}
+          <button
+            onClick={exportJSON}
+            disabled={myShows.length === 0}
+            className="w-full flex items-center gap-2 px-4 py-3 hover:bg-slate-700 disabled:opacity-50"
+          >
+            <Download className="w-4 h-4" />
+            <span>Export JSON</span>
+          </button>
+          <button
+            onClick={exportExcel}
+            disabled={myShows.length === 0}
+            className="w-full flex items-center gap-2 px-4 py-3 hover:bg-slate-700 disabled:opacity-50"
+          >
+            <Download className="w-4 h-4" />
+            <span>Export Excel</span>
+          </button>
+
+          {/* Donate */}
+          <div className="px-3 py-2 text-xs text-slate-400 border-t border-slate-700">
+            Support
+          </div>
+          <a
+            href="https://paypal.me/YOUR_PAYPAL_HANDLE"
+            target="_blank" rel="noopener noreferrer"
+            className="flex items-center gap-2 px-4 py-3 hover:bg-slate-700"
+          >
+            <DollarSign className="w-4 h-4" />
+            Donate via PayPal
+          </a>
+          <a
+            href="https://venmo.com/u/YOUR_VENMO_HANDLE"
+            target="_blank" rel="noopener noreferrer"
+            className="flex items-center gap-2 px-4 py-3 hover:bg-slate-700"
+          >
+            <DollarSign className="w-4 h-4" />
+            Donate via Venmo
+          </a>
+        </div>
+      )}
+    </div>
+  </div>
+
+  {/* Search area stays the same below */}
+</header>
+
     const header = [
       "Show Name",
       "Premiered",
@@ -424,15 +607,46 @@ export default function TVShowTracker() {
 
   // ---------- Render ----------
   return (
+  <>
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 text-white p-4">
-      <div className="max-w-6xl mx-auto">
-        {/* Header */}
-        <div className="mb-8 text-center">
-          <div className="flex items-center justify-center gap-3 mb-2">
-            <Tv className="w-10 h-10 text-purple-400" />
-            <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
-              TV Tracker
-            </h1>
+      {/* all your existing UI (header, search, cards, etc.) */}
+    </div>
+
+    {/* Sign-in dialog sits OUTSIDE the layout, but still inside return */}
+    {showSignInDialog && (
+      <div className="fixed inset-0 z-50 grid place-items-center bg-black/60">
+        <div className="w-[95%] max-w-md rounded-xl bg-slate-800 border border-slate-700 p-6">
+          <h3 className="text-lg font-semibold mb-2">Sign in</h3>
+          <p className="text-sm text-slate-300 mb-4">
+            Enter your email and we’ll send you a magic link.
+          </p>
+          <input
+            type="email"
+            value={userEmail}
+            onChange={(e) => setUserEmail(e.target.value)}
+            placeholder="you@example.com"
+            className="w-full mb-4 px-3 py-2 bg-slate-700 rounded focus:outline-none focus:ring-2 focus:ring-purple-500"
+          />
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={() => setShowSignInDialog(false)}
+              className="px-3 py-2 bg-slate-700 rounded hover:bg-slate-600"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleSendMagicLink /* your function from earlier */}
+              className="px-3 py-2 bg-purple-600 rounded hover:bg-purple-700"
+            >
+              Send link
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+  </>
+);
+
           </div>
           <p className="text-slate-300">Never lose track of what you're watching</p>
         </div>
