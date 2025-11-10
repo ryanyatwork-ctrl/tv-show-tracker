@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Search,
   Plus,
@@ -11,27 +11,21 @@ import {
   Tv,
   RotateCcw,
   CheckCircle,
+  Menu,
+  LogIn,
+  LogOut,
+  RefreshCw,
+  DollarSign,
 } from "lucide-react";
 import * as XLSX from "xlsx";
-import { getSupabase } from "./lib/supabase"; // <— NEW
+import { getSupabase } from "./lib/supabase"; // safe no-op if not configured
 
-/**
- * TVShowTracker
- * - LocalStorage persistence
- * - TVMaze search
- * - Multi-select add, "already added" badge
- * - Rewatch system (Watch #2, #3, ...)
- * - One-click mark season complete/unmark
- * - Sort by: added/title/year/genre
- * - Progress bar switches purple->green at 100%
- */
-
+/** Small helper shown inside the hamburger menu (only if Supabase is configured) */
 function MenuAccountItems({ isSignedIn, userEmail, onOpenSignIn, onSignOut, onSync }) {
-  const [supabaseAvailable, setSupabaseAvailable] = React.useState(false);
+  const [supabaseAvailable, setSupabaseAvailable] = useState(false);
   useEffect(() => {
     (async () => setSupabaseAvailable(!!(await getSupabase())))();
   }, []);
-
   if (!supabaseAvailable) return null;
 
   return (
@@ -66,22 +60,6 @@ function MenuAccountItems({ isSignedIn, userEmail, onOpenSignIn, onSignOut, onSy
     </>
   );
 }
-useEffect(() => {
-  (async () => {
-    const sp = await getSupabase();
-    if (!sp) return;
-    const { data: { session } } = await sp.auth.getSession();
-    if (session?.user) {
-      setIsSignedIn(true);
-      setUserEmail(session.user.email || "");
-    }
-    sp.auth.onAuthStateChange((_evt, ses) => {
-      const present = !!ses?.user;
-      setIsSignedIn(present);
-      setUserEmail(present ? (ses.user.email || "") : "");
-    });
-  })();
-}, []);
 
 export default function TVShowTracker() {
   // ---------- Persistence ----------
@@ -113,13 +91,56 @@ export default function TVShowTracker() {
   const [filterStatus, setFilterStatus] = useState("all");
   const [sortBy, setSortBy] = useState("added"); // added | title | year | genre
 
-  // ---------- Helpers ----------
+  // ---------- Hamburger + auth ----------
   const [menuOpen, setMenuOpen] = useState(false);
-const [isSignedIn, setIsSignedIn] = useState(false);
-const [userEmail, setUserEmail] = useState("");
-const [showSignInDialog, setShowSignInDialog] = useState(false);
-const menuRef = useRef(null);
+  const [isSignedIn, setIsSignedIn] = useState(false);
+  const [userEmail, setUserEmail] = useState("");
+  const [showSignInDialog, setShowSignInDialog] = useState(false);
+  const menuRef = useRef(null);
 
+  useEffect(() => {
+    function onDocClick(e) {
+      if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false);
+    }
+    document.addEventListener("click", onDocClick);
+    return () => document.removeEventListener("click", onDocClick);
+  }, []);
+
+  // Optional: wire auth state (no-op if Supabase not configured)
+  useEffect(() => {
+    (async () => {
+      const sp = await getSupabase();
+      if (!sp) return;
+      const { data: { session } } = await sp.auth.getSession();
+      if (session?.user) {
+        setIsSignedIn(true);
+        setUserEmail(session.user.email || "");
+      }
+      sp.auth.onAuthStateChange((_evt, ses) => {
+        const present = !!ses?.user;
+        setIsSignedIn(present);
+        setUserEmail(present ? (ses.user.email || "") : "");
+      });
+    })();
+  }, []);
+
+  const handleSendMagicLink = async () => {
+    const sp = await getSupabase();
+    if (!sp) {
+      alert("Supabase not configured yet.");
+      return;
+    }
+    if (!userEmail) {
+      alert("Enter an email.");
+      return;
+    }
+    const { error } = await sp.auth.signInWithOtp({ email: userEmail });
+    if (error) alert(error.message);
+    else alert("Check your email for the sign-in link.");
+    setShowSignInDialog(false);
+  };
+
+  // ---------- Helpers ----------
   const isShowAdded = (id) => myShows.some((s) => s.id === id);
 
   const getCurrentWatchData = (show) => {
@@ -198,14 +219,6 @@ const menuRef = useRef(null);
     const t = setTimeout(() => doSearch(searchQuery), 450);
     return () => clearTimeout(t);
   }, [searchQuery]);
-  useEffect(() => {
-  function onDocClick(e) {
-    if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false);
-  }
-  document.addEventListener("click", onDocClick);
-  return () => document.removeEventListener("click", onDocClick);
-}, []);
-
 
   // ---------- Add shows ----------
   const toggleShowSelection = (id) => {
@@ -228,7 +241,6 @@ const menuRef = useRef(null);
 
   const addShow = async (show, clearAfter = true) => {
     if (isShowAdded(show.id)) return;
-
     const details = await fetchShowDetails(show.id);
     if (!details) return;
 
@@ -256,7 +268,7 @@ const menuRef = useRef(null);
       seasons: episodesBySeason,
       addedDate: new Date().toISOString(),
       rewatches: [],
-      // currentRewatch undefined means "first watch"
+      // currentRewatch undefined => first watch
     };
 
     setMyShows((prev) => [newShow, ...prev]);
@@ -376,13 +388,10 @@ const menuRef = useRef(null);
       prev.map((show) => {
         if (show.id !== id) return show;
 
-        const nextNum = (show.rewatches?.length || 0) + 2; // 1st is the original
+        const nextNum = (show.rewatches?.length || 0) + 2; // 1st is original
         const clone = {};
         Object.keys(show.seasons).forEach((s) => {
-          clone[s] = show.seasons[s].map((e) => ({
-            ...e,
-            watched: false,
-          }));
+          clone[s] = show.seasons[s].map((e) => ({ ...e, watched: false }));
         });
 
         return {
@@ -414,117 +423,6 @@ const menuRef = useRef(null);
 
   const exportExcel = () => {
     const wb = XLSX.utils.book_new();
-
-{/* Top bar */}
-<header className="mb-8">
-  <div className="flex items-center justify-between">
-    <div className="flex items-center gap-3">
-      <Tv className="w-8 h-8 text-purple-400" />
-      <h1 className="text-3xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
-        TV Tracker
-      </h1>
-    </div>
-
-    {/* Hamburger */}
-    <div className="relative" ref={menuRef}>
-      <button
-        onClick={() => setMenuOpen(v => !v)}
-        aria-label="Open menu"
-        className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700"
-      >
-        <Menu className="w-6 h-6" />
-      </button>
-
-      {/* Dropdown */}
-      {menuOpen && (
-        <div className="absolute right-0 mt-2 w-64 rounded-xl border border-slate-700 bg-slate-800 shadow-xl overflow-hidden z-50">
-          {/* (Optional) account section */}
-          <div className="px-3 py-2 text-xs text-slate-400 border-b border-slate-700">
-            Account
-          </div>
-
-          {/* Sign in / Sign out items appear only if Supabase is configured */}
-          <MenuAccountItems
-            isSignedIn={isSignedIn}
-            userEmail={userEmail}
-            onOpenSignIn={() => setShowSignInDialog(true)}
-            onSignOut={async () => {
-              const sp = await getSupabase();
-              if (!sp) return;
-              await sp.auth.signOut();
-              setIsSignedIn(false);
-              setUserEmail("");
-            }}
-            onSync={async () => {
-              const sp = await getSupabase();
-              if (!sp) return;
-              // TODO: hook up cloud sync here (pull + push). Safe no-op for now.
-              alert("Sync is wired for Supabase; configure env vars next.");
-            }}
-          />
-
-          <div className="px-3 py-2 text-xs text-slate-400 border-b border-slate-700">
-            Data
-          </div>
-
-          {/* Import (hidden file input) */}
-          <label className="flex items-center gap-2 px-4 py-3 hover:bg-slate-700 cursor-pointer">
-            <Upload className="w-4 h-4" />
-            <span>Import Data (JSON)</span>
-            <input
-              type="file"
-              accept=".json"
-              onChange={importData}
-              className="hidden"
-            />
-          </label>
-
-          {/* Export */}
-          <button
-            onClick={exportJSON}
-            disabled={myShows.length === 0}
-            className="w-full flex items-center gap-2 px-4 py-3 hover:bg-slate-700 disabled:opacity-50"
-          >
-            <Download className="w-4 h-4" />
-            <span>Export JSON</span>
-          </button>
-          <button
-            onClick={exportExcel}
-            disabled={myShows.length === 0}
-            className="w-full flex items-center gap-2 px-4 py-3 hover:bg-slate-700 disabled:opacity-50"
-          >
-            <Download className="w-4 h-4" />
-            <span>Export Excel</span>
-          </button>
-
-          {/* Donate */}
-          <div className="px-3 py-2 text-xs text-slate-400 border-t border-slate-700">
-            Support
-          </div>
-          <a
-            href="https://paypal.me/YOUR_PAYPAL_HANDLE"
-            target="_blank" rel="noopener noreferrer"
-            className="flex items-center gap-2 px-4 py-3 hover:bg-slate-700"
-          >
-            <DollarSign className="w-4 h-4" />
-            Donate via PayPal
-          </a>
-          <a
-            href="https://venmo.com/u/YOUR_VENMO_HANDLE"
-            target="_blank" rel="noopener noreferrer"
-            className="flex items-center gap-2 px-4 py-3 hover:bg-slate-700"
-          >
-            <DollarSign className="w-4 h-4" />
-            Donate via Venmo
-          </a>
-        </div>
-      )}
-    </div>
-  </div>
-
-  {/* Search area stays the same below */}
-</header>
-
     const header = [
       "Show Name",
       "Premiered",
@@ -607,453 +505,524 @@ const menuRef = useRef(null);
 
   // ---------- Render ----------
   return (
-  <>
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 text-white p-4">
-      {/* all your existing UI (header, search, cards, etc.) */}
-    </div>
+    <>
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 text-white p-4">
+        <div className="max-w-6xl mx-auto">
+          {/* Top bar */}
+          <header className="mb-8">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <Tv className="w-8 h-8 text-purple-400" />
+                <h1 className="text-3xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
+                  TV Tracker
+                </h1>
+              </div>
 
-    {/* Sign-in dialog sits OUTSIDE the layout, but still inside return */}
-    {showSignInDialog && (
-      <div className="fixed inset-0 z-50 grid place-items-center bg-black/60">
-        <div className="w-[95%] max-w-md rounded-xl bg-slate-800 border border-slate-700 p-6">
-          <h3 className="text-lg font-semibold mb-2">Sign in</h3>
-          <p className="text-sm text-slate-300 mb-4">
-            Enter your email and we’ll send you a magic link.
-          </p>
-          <input
-            type="email"
-            value={userEmail}
-            onChange={(e) => setUserEmail(e.target.value)}
-            placeholder="you@example.com"
-            className="w-full mb-4 px-3 py-2 bg-slate-700 rounded focus:outline-none focus:ring-2 focus:ring-purple-500"
-          />
-          <div className="flex justify-end gap-2">
-            <button
-              onClick={() => setShowSignInDialog(false)}
-              className="px-3 py-2 bg-slate-700 rounded hover:bg-slate-600"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleSendMagicLink /* your function from earlier */}
-              className="px-3 py-2 bg-purple-600 rounded hover:bg-purple-700"
-            >
-              Send link
-            </button>
+              {/* Hamburger */}
+              <div className="relative" ref={menuRef}>
+                <button
+                  onClick={() => setMenuOpen((v) => !v)}
+                  aria-label="Open menu"
+                  className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700"
+                >
+                  <Menu className="w-6 h-6" />
+                </button>
+
+                {/* Dropdown */}
+                {menuOpen && (
+                  <div className="absolute right-0 mt-2 w-64 rounded-xl border border-slate-700 bg-slate-800 shadow-xl overflow-hidden z-50">
+                    <div className="px-3 py-2 text-xs text-slate-400 border-b border-slate-700">
+                      Account
+                    </div>
+
+                    <MenuAccountItems
+                      isSignedIn={isSignedIn}
+                      userEmail={userEmail}
+                      onOpenSignIn={() => setShowSignInDialog(true)}
+                      onSignOut={async () => {
+                        const sp = await getSupabase();
+                        if (!sp) return;
+                        await sp.auth.signOut();
+                        setIsSignedIn(false);
+                        setUserEmail("");
+                      }}
+                      onSync={async () => {
+                        const sp = await getSupabase();
+                        if (!sp) return;
+                        alert("Sync is wired for Supabase; configure env vars next.");
+                      }}
+                    />
+
+                    <div className="px-3 py-2 text-xs text-slate-400 border-b border-slate-700">
+                      Data
+                    </div>
+
+                    {/* Import (hidden file input) */}
+                    <label className="flex items-center gap-2 px-4 py-3 hover:bg-slate-700 cursor-pointer">
+                      <Upload className="w-4 h-4" />
+                      <span>Import Data (JSON)</span>
+                      <input type="file" accept=".json" onChange={importData} className="hidden" />
+                    </label>
+
+                    {/* Export */}
+                    <button
+                      onClick={exportJSON}
+                      disabled={myShows.length === 0}
+                      className="w-full flex items-center gap-2 px-4 py-3 hover:bg-slate-700 disabled:opacity-50"
+                    >
+                      <Download className="w-4 h-4" />
+                      <span>Export JSON</span>
+                    </button>
+                    <button
+                      onClick={exportExcel}
+                      disabled={myShows.length === 0}
+                      className="w-full flex items-center gap-2 px-4 py-3 hover:bg-slate-700 disabled:opacity-50"
+                    >
+                      <Download className="w-4 h-4" />
+                      <span>Export Excel</span>
+                    </button>
+
+                    {/* Donate */}
+                    <div className="px-3 py-2 text-xs text-slate-400 border-t border-slate-700">
+                      Support
+                    </div>
+                    <a
+                      href="https://paypal.me/YOUR_PAYPAL_HANDLE"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-2 px-4 py-3 hover:bg-slate-700"
+                    >
+                      <DollarSign className="w-4 h-4" />
+                      Donate via PayPal
+                    </a>
+                    <a
+                      href="https://venmo.com/u/YOUR_VENMO_HANDLE"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-2 px-4 py-3 hover:bg-slate-700"
+                    >
+                      <DollarSign className="w-4 h-4" />
+                      Donate via Venmo
+                    </a>
+                  </div>
+                )}
+              </div>
+            </div>
+          </header>
+
+          {/* Search */}
+          <div className="mb-8 bg-slate-800 rounded-lg p-6 shadow-xl">
+            <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
+              <Plus className="w-5 h-5 text-purple-400" />
+              Add New Series
+            </h2>
+
+            <div className="relative mb-4">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-5 h-5" />
+              <input
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search for a TV show..."
+                className="w-full pl-12 pr-4 py-3 bg-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                type="text"
+              />
+            </div>
+
+            {selectedShows.size > 0 && (
+              <div className="mb-4 flex items-center justify-between bg-purple-900/50 p-3 rounded-lg">
+                <span>{selectedShows.size} show(s) selected</span>
+                <button
+                  onClick={addSelectedShows}
+                  className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg font-semibold"
+                >
+                  Add Selected Shows
+                </button>
+              </div>
+            )}
+
+            {isSearching && <div className="mt-4 text-center text-slate-400">Searching…</div>}
+
+            {!!searchResults.length && (
+              <div className="mt-4 space-y-2 max-h-96 overflow-y-auto">
+                {searchResults.map((r) => {
+                  const s = r.show;
+                  const already = isShowAdded(s.id);
+                  const isChecked = selectedShows.has(s.id);
+                  return (
+                    <div
+                      key={s.id}
+                      className={`flex items-center gap-4 p-3 rounded-lg transition-colors ${
+                        already
+                          ? "bg-slate-600 opacity-60"
+                          : isChecked
+                          ? "bg-purple-700"
+                          : "bg-slate-700 hover:bg-slate-600"
+                      }`}
+                    >
+                      {!already && (
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={() => toggleShowSelection(s.id)}
+                          className="w-5 h-5 rounded"
+                        />
+                      )}
+                      {s.image?.medium && (
+                        <img
+                          src={s.image.medium}
+                          alt={s.name}
+                          className="w-16 h-24 object-cover rounded"
+                        />
+                      )}
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          <h3 className="font-semibold">{s.name}</h3>
+                          {already && (
+                            <span className="text-xs bg-green-600 px-2 py-1 rounded-full">
+                              ✓ Already Added
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-sm text-slate-400">
+                          {s.premiered ? `Premiered: ${s.premiered.slice(0, 4)}` : "N/A"}
+                        </p>
+                      </div>
+                      {!already && (
+                        <button
+                          onClick={() => addShow(s)}
+                          className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg"
+                        >
+                          Add
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
-        </div>
-      </div>
-    )}
-  </>
-);
 
-          </div>
-          <p className="text-slate-300">Never lose track of what you're watching</p>
-        </div>
-
-        {/* Export / Import */}
-        <div className="mb-6 flex flex-wrap gap-3 justify-center">
-          <button
-            onClick={exportJSON}
-            disabled={!myShows.length}
-            className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 rounded-lg"
-          >
-            <Download className="w-4 h-4" />
-            Export JSON
-          </button>
-          <button
-            onClick={exportExcel}
-            disabled={!myShows.length}
-            className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-600 rounded-lg"
-          >
-            <Download className="w-4 h-4" />
-            Export Excel
-          </button>
-          <label className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg cursor-pointer">
-            <Upload className="w-4 h-4" />
-            Import Data
-            <input type="file" accept=".json" className="hidden" onChange={importData} />
-          </label>
-        </div>
-
-        {/* Search */}
-        <div className="mb-8 bg-slate-800 rounded-lg p-6 shadow-xl">
-          <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
-            <Plus className="w-5 h-5 text-purple-400" />
-            Add New Series
-          </h2>
-
-          <div className="relative mb-4">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-5 h-5" />
-            <input
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search for a TV show..."
-              className="w-full pl-12 pr-4 py-3 bg-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
-              type="text"
-            />
-          </div>
-
-          {selectedShows.size > 0 && (
-            <div className="mb-4 flex items-center justify-between bg-purple-900/50 p-3 rounded-lg">
-              <span>{selectedShows.size} show(s) selected</span>
-              <button
-                onClick={addSelectedShows}
-                className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg font-semibold"
-              >
-                Add Selected Shows
-              </button>
+          {/* Sort & Filter */}
+          {myShows.length > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+              <h2 className="text-2xl font-semibold">My Shows ({visibleShows.length})</h2>
+              <div className="flex gap-3">
+                <select
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value)}
+                  className="px-4 py-2 bg-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                >
+                  <option value="added">Sort: Recently Added</option>
+                  <option value="title">Sort: Title (A–Z)</option>
+                  <option value="year">Sort: Year (Newest)</option>
+                  <option value="genre">Sort: Genre</option>
+                </select>
+                <select
+                  value={filterStatus}
+                  onChange={(e) => setFilterStatus(e.target.value)}
+                  className="px-4 py-2 bg-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                >
+                  <option value="all">All Shows</option>
+                  <option value="in-progress">In Progress</option>
+                  <option value="completed">Completed</option>
+                </select>
+              </div>
             </div>
           )}
 
-          {isSearching && <div className="mt-4 text-center text-slate-400">Searching…</div>}
+          {/* Shows grid */}
+          {visibleShows.length === 0 ? (
+            <div className="text-center py-12 bg-slate-800 rounded-lg">
+              <Tv className="w-16 h-16 mx-auto mb-4 text-slate-600" />
+              <p className="text-slate-400">
+                {myShows.length
+                  ? "No shows match the current filters."
+                  : "No shows yet. Add your first above!"}
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {visibleShows.map((show) => {
+                const { seasons } = getCurrentWatchData(show);
+                const progress = getWatchProgress(show);
+                const pct = progress.percentage;
+                const isExpanded = expandedShow === show.id;
+                const hasRewatches = (show.rewatches?.length || 0) > 0;
 
-          {!!searchResults.length && (
-            <div className="mt-4 space-y-2 max-h-96 overflow-y-auto">
-              {searchResults.map((r) => {
-                const s = r.show;
-                const already = isShowAdded(s.id);
-                const isChecked = selectedShows.has(s.id);
                 return (
-                  <div
-                    key={s.id}
-                    className={`flex items-center gap-4 p-3 rounded-lg transition-colors ${
-                      already
-                        ? "bg-slate-600 opacity-60"
-                        : isChecked
-                        ? "bg-purple-700"
-                        : "bg-slate-700 hover:bg-slate-600"
+                  <article
+                    key={show.id}
+                    className={`bg-zinc-900 rounded-lg overflow-hidden border border-zinc-800 ${
+                      pct === 100 ? "ring-2 ring-green-500/50 shadow-green-500/20" : ""
                     }`}
                   >
-                    {!already && (
-                      <input
-                        type="checkbox"
-                        checked={isChecked}
-                        onChange={() => toggleShowSelection(s.id)}
-                        className="w-5 h-5 rounded"
-                      />
-                    )}
-                    {s.image?.medium && (
-                      <img
-                        src={s.image.medium}
-                        alt={s.name}
-                        className="w-16 h-24 object-cover rounded"
-                      />
-                    )}
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2">
-                        <h3 className="font-semibold">{s.name}</h3>
-                        {already && (
-                          <span className="text-xs bg-green-600 px-2 py-1 rounded-full">
-                            ✓ Already Added
-                          </span>
+                    <div className="p-4">
+                      {/* Top row */}
+                      <div className="flex items-start gap-4">
+                        {show.image && (
+                          <img
+                            src={show.image}
+                            alt={show.name}
+                            className="w-20 h-28 object-cover rounded"
+                          />
                         )}
+                        <div className="flex-1">
+                          <div className="flex items-start justify-between mb-2">
+                            <div>
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <h3 className="text-xl font-semibold">{show.name}</h3>
+                                {pct === 100 && (
+                                  <span className="flex items-center gap-1 px-3 py-1 bg-gradient-to-r from-green-500 to-emerald-500 rounded-full text-xs font-bold text-white shadow-lg">
+                                    <Check className="w-4 h-4" />
+                                    COMPLETED
+                                  </span>
+                                )}
+                                {hasRewatches && (
+                                  <span className="flex items-center gap-1 px-2 py-1 bg-blue-600 rounded-full text-xs font-bold">
+                                    <RotateCcw className="w-3 h-3" />
+                                    {show.rewatches.length} rewatch
+                                    {show.rewatches.length > 1 ? "es" : ""}
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-sm text-slate-400">
+                                {(show.genres || []).join(", ")} •{" "}
+                                {show.premiered?.slice(0, 4) || ""}
+                              </p>
+                            </div>
+
+                            <button
+                              onClick={() => removeShow(show.id)}
+                              className="text-red-400 hover:text-red-300 p-2"
+                              title="Remove show"
+                            >
+                              <Trash2 className="w-5 h-5" />
+                            </button>
+                          </div>
+
+                          {/* Rewatch selector */}
+                          {hasRewatches && (
+                            <div className="mb-3 flex items-center gap-2">
+                              <span className="text-sm text-slate-400">Viewing:</span>
+                              <select
+                                value={show.currentRewatch || 1}
+                                onChange={(e) => switchToWatch(show.id, parseInt(e.target.value))}
+                                className="px-3 py-1 bg-slate-700 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              >
+                                <option value={1}>First Watch</option>
+                                {show.rewatches.map((rw) => (
+                                  <option key={rw.watchNumber} value={rw.watchNumber}>
+                                    Watch #{rw.watchNumber}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          )}
+
+                          {/* Progress bar */}
+                          <div className="mb-3">
+                            <div className="flex justify-between text-sm text-slate-400 mb-1">
+                              <span>
+                                Progress{" "}
+                                {show.currentRewatch > 1 ? `(Watch #${show.currentRewatch})` : ""}
+                              </span>
+                              <span>
+                                {progress.watched} / {progress.total} episodes ({pct}%)
+                              </span>
+                            </div>
+                            <div className="w-full bg-slate-700 rounded-full h-2">
+                              <div
+                                className={`h-2 rounded transition-[width,background-color] duration-300 ${
+                                  pct === 100 ? "bg-green-600" : "bg-purple-600"
+                                }`}
+                                style={{ width: `${pct}%` }}
+                              />
+                            </div>
+                          </div>
+
+                          {/* Where watching */}
+                          <div className="mb-3">
+                            <label className="text-sm text-slate-400 mb-1 block">Watching on:</label>
+                            <input
+                              value={show.source}
+                              onChange={(e) => updateSource(show.id, e.target.value)}
+                              placeholder="Netflix, DVD, etc."
+                              className="w-full px-3 py-2 bg-slate-700 rounded focus:outline-none focus:ring-2 focus:ring-purple-500"
+                            />
+                          </div>
+
+                          {/* Expand toggle + rewatch button */}
+                          <div className="flex gap-2 flex-wrap">
+                            <button
+                              onClick={() => setExpandedShow(isExpanded ? null : show.id)}
+                              className="flex items-center gap-2 text-purple-400 hover:text-purple-300"
+                            >
+                              {isExpanded ? (
+                                <ChevronDown className="w-4 h-4" />
+                              ) : (
+                                <ChevronRight className="w-4 h-4" />
+                              )}
+                              {isExpanded ? "Hide" : "Show"} Seasons & Episodes
+                            </button>
+
+                            {pct === 100 && (
+                              <button
+                                onClick={() => startRewatch(show.id)}
+                                className="flex items-center gap-2 px-3 py-1 bg-blue-600 hover:bg-blue-700 rounded text-sm"
+                              >
+                                <RotateCcw className="w-4 h-4" />
+                                Re-watch this show
+                              </button>
+                            )}
+                          </div>
+                        </div>
                       </div>
-                      <p className="text-sm text-slate-400">
-                        {s.premiered ? `Premiered: ${s.premiered.slice(0, 4)}` : "N/A"}
-                      </p>
+
+                      {/* Season list */}
+                      {isExpanded && (
+                        <div className="mt-4 space-y-3">
+                          {Object.keys(seasons)
+                            .sort((a, b) => Number(a) - Number(b))
+                            .map((sNum) => {
+                              const eps = seasons[sNum] || [];
+                              const sp = getSeasonProgress(eps);
+                              const sid = `${show.id}-${sNum}`;
+                              const isOpen = expandedSeason === sid;
+                              const done = sp.watched === sp.total && sp.total > 0;
+
+                              return (
+                                <div key={sNum} className="bg-slate-700 rounded-lg p-4">
+                                  <div className="flex items-center justify-between mb-2">
+                                    <button
+                                      onClick={() => setExpandedSeason(isOpen ? null : sid)}
+                                      className="flex items-center gap-2"
+                                    >
+                                      {isOpen ? (
+                                        <ChevronDown className="w-4 h-4" />
+                                      ) : (
+                                        <ChevronRight className="w-4 h-4" />
+                                      )}
+                                      <span className="font-semibold">Season {sNum}</span>
+                                      <span className="text-sm text-slate-300">
+                                        ({sp.watched}/{sp.total})
+                                      </span>
+                                      {done && (
+                                        <span className="flex items-center gap-1 px-2 py-0.5 bg-green-600 rounded-full text-xs font-bold">
+                                          <Check className="w-3 h-3" />
+                                          Complete
+                                        </span>
+                                      )}
+                                    </button>
+
+                                    {!done ? (
+                                      <button
+                                        onClick={() => markSeasonComplete(show.id, sNum, true)}
+                                        className="flex items-center gap-1 px-3 py-1 bg-green-600 hover:bg-green-700 rounded text-xs"
+                                        title="Mark all episodes as watched"
+                                      >
+                                        <CheckCircle className="w-3 h-3" />
+                                        Mark Complete
+                                      </button>
+                                    ) : (
+                                      <button
+                                        onClick={() => markSeasonComplete(show.id, sNum, false)}
+                                        className="flex items-center gap-1 px-3 py-1 bg-slate-600 hover:bg-slate-500 rounded text-xs"
+                                        title="Mark all episodes as unwatched"
+                                      >
+                                        Unmark All
+                                      </button>
+                                    )}
+                                  </div>
+
+                                  {isOpen && (
+                                    <div className="space-y-2 mt-3">
+                                      {eps.map((ep) => (
+                                        <div
+                                          key={ep.id}
+                                          className="flex items-center gap-3 p-2 bg-slate-600 rounded hover:bg-slate-500 transition-colors"
+                                        >
+                                          <button
+                                            onClick={() =>
+                                              toggleEpisodeWatched(show.id, sNum, ep.id)
+                                            }
+                                            className={`w-6 h-6 rounded border-2 flex items-center justify-center transition-colors ${
+                                              ep.watched
+                                                ? "bg-purple-600 border-purple-600"
+                                                : "border-slate-400"
+                                            }`}
+                                          >
+                                            {ep.watched && <Check className="w-4 h-4" />}
+                                          </button>
+                                          <div className="flex-1">
+                                            <div className="flex items-center gap-2">
+                                              <span className="font-medium">
+                                                {ep.number}. {ep.name}
+                                              </span>
+                                            </div>
+                                            {ep.airdate && (
+                                              <span className="text-xs text-slate-300">
+                                                {ep.airdate}
+                                              </span>
+                                            )}
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                        </div>
+                      )}
                     </div>
-                    {!already && (
-                      <button
-                        onClick={() => addShow(s)}
-                        className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg"
-                      >
-                        Add
-                      </button>
-                    )}
-                  </div>
+                  </article>
                 );
               })}
             </div>
           )}
-        </div>
 
-        {/* Sort & Filter */}
-        {myShows.length > 0 && (
-          <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-            <h2 className="text-2xl font-semibold">
-              My Shows ({visibleShows.length})
-            </h2>
-            <div className="flex gap-3">
-              <select
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value)}
-                className="px-4 py-2 bg-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
-              >
-                <option value="added">Sort: Recently Added</option>
-                <option value="title">Sort: Title (A–Z)</option>
-                <option value="year">Sort: Year (Newest)</option>
-                <option value="genre">Sort: Genre</option>
-              </select>
-              <select
-                value={filterStatus}
-                onChange={(e) => setFilterStatus(e.target.value)}
-                className="px-4 py-2 bg-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
-              >
-                <option value="all">All Shows</option>
-                <option value="in-progress">In Progress</option>
-                <option value="completed">Completed</option>
-              </select>
-            </div>
-          </div>
-        )}
-
-        {/* Shows grid */}
-        {visibleShows.length === 0 ? (
-          <div className="text-center py-12 bg-slate-800 rounded-lg">
-            <Tv className="w-16 h-16 mx-auto mb-4 text-slate-600" />
-            <p className="text-slate-400">
-              {myShows.length ? "No shows match the current filters." : "No shows yet. Add your first above!"}
+          {/* Footer */}
+          <div className="mt-8 text-center text-sm text-slate-300 bg-slate-800 rounded-lg p-4">
+            <p className="mb-1">
+              <strong>Your data saves automatically.</strong>
             </p>
+            <p>Re-watch completed shows, mark seasons complete, sort your collection.</p>
           </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {visibleShows.map((show) => {
-              const { seasons } = getCurrentWatchData(show);
-              const progress = getWatchProgress(show);
-              const pct = progress.percentage;
-              const isExpanded = expandedShow === show.id;
-              const hasRewatches = (show.rewatches?.length || 0) > 0;
-
-              return (
-                <article
-                  key={show.id}
-                  className={`bg-zinc-900 rounded-lg overflow-hidden border border-zinc-800 ${
-                    pct === 100 ? "ring-2 ring-green-500/50 shadow-green-500/20" : ""
-                  }`}
-                >
-                  <div className="p-4">
-                    {/* Top row */}
-                    <div className="flex items-start gap-4">
-                      {show.image && (
-                        <img
-                          src={show.image}
-                          alt={show.name}
-                          className="w-20 h-28 object-cover rounded"
-                        />
-                      )}
-                      <div className="flex-1">
-                        <div className="flex items-start justify-between mb-2">
-                          <div>
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <h3 className="text-xl font-semibold">{show.name}</h3>
-                              {pct === 100 && (
-                                <span className="flex items-center gap-1 px-3 py-1 bg-gradient-to-r from-green-500 to-emerald-500 rounded-full text-xs font-bold text-white shadow-lg">
-                                  <Check className="w-4 h-4" />
-                                  COMPLETED
-                                </span>
-                              )}
-                              {hasRewatches && (
-                                <span className="flex items-center gap-1 px-2 py-1 bg-blue-600 rounded-full text-xs font-bold">
-                                  <RotateCcw className="w-3 h-3" />
-                                  {show.rewatches.length} rewatch
-                                  {show.rewatches.length > 1 ? "es" : ""}
-                                </span>
-                              )}
-                            </div>
-                            <p className="text-sm text-slate-400">
-                              {(show.genres || []).join(", ")} • {show.premiered?.slice(0, 4) || ""}
-                            </p>
-                          </div>
-
-                          <button
-                            onClick={() => removeShow(show.id)}
-                            className="text-red-400 hover:text-red-300 p-2"
-                            title="Remove show"
-                          >
-                            <Trash2 className="w-5 h-5" />
-                          </button>
-                        </div>
-
-                        {/* Rewatch selector */}
-                        {hasRewatches && (
-                          <div className="mb-3 flex items-center gap-2">
-                            <span className="text-sm text-slate-400">Viewing:</span>
-                            <select
-                              value={show.currentRewatch || 1}
-                              onChange={(e) => switchToWatch(show.id, parseInt(e.target.value))}
-                              className="px-3 py-1 bg-slate-700 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                            >
-                              <option value={1}>First Watch</option>
-                              {show.rewatches.map((rw) => (
-                                <option key={rw.watchNumber} value={rw.watchNumber}>
-                                  Watch #{rw.watchNumber}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                        )}
-
-                        {/* Progress bar */}
-                        <div className="mb-3">
-                          <div className="flex justify-between text-sm text-slate-400 mb-1">
-                            <span>
-                              Progress{" "}
-                              {show.currentRewatch > 1 ? `(Watch #${show.currentRewatch})` : ""}
-                            </span>
-                            <span>
-                              {progress.watched} / {progress.total} episodes ({pct}%)
-                            </span>
-                          </div>
-                          <div className="w-full bg-slate-700 rounded-full h-2">
-                            <div
-                              className={`h-2 rounded transition-[width,background-color] duration-300 ${
-                                pct === 100 ? "bg-green-600" : "bg-purple-600"
-                              }`}
-                              style={{ width: `${pct}%` }}
-                            />
-                          </div>
-                        </div>
-
-                        {/* Where watching */}
-                        <div className="mb-3">
-                          <label className="text-sm text-slate-400 mb-1 block">Watching on:</label>
-                          <input
-                            value={show.source}
-                            onChange={(e) => updateSource(show.id, e.target.value)}
-                            placeholder="Netflix, DVD, etc."
-                            className="w-full px-3 py-2 bg-slate-700 rounded focus:outline-none focus:ring-2 focus:ring-purple-500"
-                          />
-                        </div>
-
-                        {/* Expand toggle + rewatch button */}
-                        <div className="flex gap-2 flex-wrap">
-                          <button
-                            onClick={() => setExpandedShow(isExpanded ? null : show.id)}
-                            className="flex items-center gap-2 text-purple-400 hover:text-purple-300"
-                          >
-                            {isExpanded ? (
-                              <ChevronDown className="w-4 h-4" />
-                            ) : (
-                              <ChevronRight className="w-4 h-4" />
-                            )}
-                            {isExpanded ? "Hide" : "Show"} Seasons & Episodes
-                          </button>
-
-                          {pct === 100 && (
-                            <button
-                              onClick={() => startRewatch(show.id)}
-                              className="flex items-center gap-2 px-3 py-1 bg-blue-600 hover:bg-blue-700 rounded text-sm"
-                            >
-                              <RotateCcw className="w-4 h-4" />
-                              Re-watch this show
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Season list */}
-                    {isExpanded && (
-                      <div className="mt-4 space-y-3">
-                        {Object.keys(seasons)
-                          .sort((a, b) => Number(a) - Number(b))
-                          .map((sNum) => {
-                            const eps = seasons[sNum] || [];
-                            const sp = getSeasonProgress(eps);
-                            const sid = `${show.id}-${sNum}`;
-                            const isOpen = expandedSeason === sid;
-                            const done = sp.watched === sp.total && sp.total > 0;
-
-                            return (
-                              <div key={sNum} className="bg-slate-700 rounded-lg p-4">
-                                <div className="flex items-center justify-between mb-2">
-                                  <button
-                                    onClick={() => setExpandedSeason(isOpen ? null : sid)}
-                                    className="flex items-center gap-2"
-                                  >
-                                    {isOpen ? (
-                                      <ChevronDown className="w-4 h-4" />
-                                    ) : (
-                                      <ChevronRight className="w-4 h-4" />
-                                    )}
-                                    <span className="font-semibold">Season {sNum}</span>
-                                    <span className="text-sm text-slate-300">
-                                      ({sp.watched}/{sp.total})
-                                    </span>
-                                    {done && (
-                                      <span className="flex items-center gap-1 px-2 py-0.5 bg-green-600 rounded-full text-xs font-bold">
-                                        <Check className="w-3 h-3" />
-                                        Complete
-                                      </span>
-                                    )}
-                                  </button>
-
-                                  {!done ? (
-                                    <button
-                                      onClick={() => markSeasonComplete(show.id, sNum, true)}
-                                      className="flex items-center gap-1 px-3 py-1 bg-green-600 hover:bg-green-700 rounded text-xs"
-                                      title="Mark all episodes as watched"
-                                    >
-                                      <CheckCircle className="w-3 h-3" />
-                                      Mark Complete
-                                    </button>
-                                  ) : (
-                                    <button
-                                      onClick={() => markSeasonComplete(show.id, sNum, false)}
-                                      className="flex items-center gap-1 px-3 py-1 bg-slate-600 hover:bg-slate-500 rounded text-xs"
-                                      title="Mark all episodes as unwatched"
-                                    >
-                                      Unmark All
-                                    </button>
-                                  )}
-                                </div>
-
-                                {isOpen && (
-                                  <div className="space-y-2 mt-3">
-                                    {eps.map((ep) => (
-                                      <div
-                                        key={ep.id}
-                                        className="flex items-center gap-3 p-2 bg-slate-600 rounded hover:bg-slate-500 transition-colors"
-                                      >
-                                        <button
-                                          onClick={() =>
-                                            toggleEpisodeWatched(show.id, sNum, ep.id)
-                                          }
-                                          className={`w-6 h-6 rounded border-2 flex items-center justify-center transition-colors ${
-                                            ep.watched
-                                              ? "bg-purple-600 border-purple-600"
-                                              : "border-slate-400"
-                                          }`}
-                                        >
-                                          {ep.watched && <Check className="w-4 h-4" />}
-                                        </button>
-                                        <div className="flex-1">
-                                          <div className="flex items-center gap-2">
-                                            <span className="font-medium">
-                                              {ep.number}. {ep.name}
-                                            </span>
-                                          </div>
-                                          {ep.airdate && (
-                                            <span className="text-xs text-slate-300">
-                                              {ep.airdate}
-                                            </span>
-                                          )}
-                                        </div>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })}
-                      </div>
-                    )}
-                  </div>
-                </article>
-              );
-            })}
-          </div>
-        )}
-
-        {/* Footer */}
-        <div className="mt-8 text-center text-sm text-slate-300 bg-slate-800 rounded-lg p-4">
-          <p className="mb-1">
-            <strong>Your data saves automatically.</strong>
-          </p>
-          <p>Re-watch completed shows, mark seasons complete, sort your collection.</p>
         </div>
       </div>
-    </div>
+
+      {/* Sign-in dialog */}
+      {showSignInDialog && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/60">
+          <div className="w-[95%] max-w-md rounded-xl bg-slate-800 border border-slate-700 p-6">
+            <h3 className="text-lg font-semibold mb-2">Sign in</h3>
+            <p className="text-sm text-slate-300 mb-4">
+              Enter your email and we’ll send you a magic link.
+            </p>
+            <input
+              type="email"
+              value={userEmail}
+              onChange={(e) => setUserEmail(e.target.value)}
+              placeholder="you@example.com"
+              className="w-full mb-4 px-3 py-2 bg-slate-700 rounded focus:outline-none focus:ring-2 focus:ring-purple-500"
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setShowSignInDialog(false)}
+                className="px-3 py-2 bg-slate-700 rounded hover:bg-slate-600"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSendMagicLink}
+                className="px-3 py-2 bg-purple-600 rounded hover:bg-purple-700"
+              >
+                Send link
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
