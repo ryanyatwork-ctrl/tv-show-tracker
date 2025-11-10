@@ -199,4 +199,123 @@ export default function TVShowTracker() {
                       </button>
                     </div>
 
-                    {/* Progr*
+                    {/* Progress bar */}
+                    <div className="mt-3">
+                      <div className="flex justify-between text-xs text-zinc-400 mb-1">
+                        <span>Progress</span>
+                        <span>{watched}/{total} ({pct}%)</span>
+                      </div>
+                      <div className="h-2 bg-zinc-800 rounded">
+                        <div className="h-2 bg-purple-600 rounded" style={{ width: `${pct}%` }} />
+                      </div>
+                    </div>
+
+                    {/* Source */}
+                    <div className="mt-3">
+                      <label className="text-xs text-zinc-400 mb-1 block">Watching on</label>
+                      <input
+                        value={show.source ?? ""}
+                        onChange={e => updateSource(show.id, e.target.value)}
+                        placeholder="Netflix, DVD, etc."
+                        className="w-full px-3 py-2 bg-zinc-800 rounded outline-none focus:ring-2 focus:ring-purple-500"
+                      />
+                    </div>
+
+                    {/* Expand seasons */}
+                    <button
+                      onClick={() => setExpandedShow(isOpen ? null : show.id)}
+                      className="mt-3 flex items-center gap-2 text-purple-400 hover:text-purple-300"
+                    >
+                      {isOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                      {isOpen ? "Hide" : "Show"} Seasons & Episodes
+                    </button>
+
+                    {isOpen && (
+                      <div className="mt-3 space-y-3">
+                        {Object.keys(show.seasons ?? {}).sort((a,b)=>Number(a)-Number(b)).map(seasonNum => {
+                          const eps = show.seasons[seasonNum] ?? [];
+                          const seasonWatched = eps.filter(e => e.watched).length;
+                          const seasonTotal = eps.length;
+                          const seasonOpen = expandedSeason === `${show.id}-${seasonNum}`;
+                          const complete = seasonTotal > 0 && seasonWatched === seasonTotal;
+
+                          return (
+                            <div key={seasonNum} className="bg-zinc-800 rounded p-3">
+                              <div className="flex items-center justify-between">
+                                <button
+                                  onClick={() => setExpandedSeason(seasonOpen ? null : `${show.id}-${seasonNum}`)}
+                                  className="flex items-center gap-2"
+                                >
+                                  {seasonOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                                  <span className="font-medium">Season {seasonNum}</span>
+                                  <span className="text-xs text-zinc-400">
+                                    ({seasonWatched}/{seasonTotal})
+                                  </span>
+                                  {complete && (
+                                    <span className="ml-2 text-xs px-2 py-0.5 rounded bg-green-700/40 border border-green-700 flex items-center gap-1">
+                                      <CheckCircle className="w-3 h-3" /> Complete
+                                    </span>
+                                  )}
+                                </button>
+
+                                {seasonTotal > 0 && (
+                                  complete ? (
+                                    <button
+                                      onClick={() => markSeason(show.id, seasonNum, false)}
+                                      className="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600"
+                                    >
+                                      Unmark all
+                                    </button>
+                                  ) : (
+                                    <button
+                                      onClick={() => markSeason(show.id, seasonNum, true)}
+                                      className="text-xs px-2 py-1 rounded bg-green-600 hover:bg-green-700"
+                                    >
+                                      Mark complete
+                                    </button>
+                                  )
+                                )}
+                              </div>
+
+                              {seasonOpen && (
+                                <ul className="mt-2 space-y-1">
+                                  {eps.map(ep => (
+                                    <li key={ep.id}
+                                        className="flex items-center gap-3 bg-zinc-700/60 rounded px-2 py-1">
+                                      <button
+                                        onClick={() => toggleEpisodeWatched(show.id, seasonNum, ep.id)}
+                                        className={`w-5 h-5 rounded border-2 flex items-center justify-center ${
+                                          ep.watched ? "bg-purple-600 border-purple-600" : "border-zinc-400"
+                                        }`}
+                                        title={ep.watched ? "Unwatch" : "Mark watched"}
+                                      >
+                                        {ep.watched && <Check className="w-4 h-4" />}
+                                      </button>
+                                      <div className="flex-1 text-sm">
+                                        <span className="font-medium">{ep.number}. {ep.name}</span>
+                                        {ep.airdate && (
+                                          <span className="text-xs text-zinc-300 ml-2">{ep.airdate}</span>
+                                        )}
+                                      </div>
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
+                            </div>
+                          );
+                        })}
+                        {(Object.keys(show.seasons ?? {}).length === 0) && (
+                          <div className="text-sm text-zinc-400">No episode data.</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
+          </section>
+        )}
+      </main>
+    </div>
+  );
+}
