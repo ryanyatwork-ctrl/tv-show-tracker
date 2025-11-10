@@ -507,7 +507,7 @@ export default function TVShowTracker() {
                   Donate via PayPal
                 </a>
                 <a
-                  href="https://venmo.com/u/RyanMYoung"     
+                  href="https://www.venmo.com/u/BellevilleSystems"     
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex items-center gap-2 px-4 py-3 hover:bg-slate-700"
