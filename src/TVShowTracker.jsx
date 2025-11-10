@@ -63,7 +63,7 @@ export default function TVShowTracker() {
   const importData = (e) => {
     // ...your existing code...
   };
-
+console.log("TVShowTracker render called");
   return (
     <>
       {/* your JSX; the Export Excel button already calls onClick={exportExcel} */}
