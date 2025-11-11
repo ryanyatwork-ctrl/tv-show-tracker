@@ -133,6 +133,11 @@ export default function TVShowTracker() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const [showEmailForm, setShowEmailForm] = useState(false);
+const [emailInput, setEmailInput] = useState("");
+const [emailSending, setEmailSending] = useState(false);
+const [emailMsg, setEmailMsg] = useState("");
+
   // ---------- UI state ----------
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState([]);
