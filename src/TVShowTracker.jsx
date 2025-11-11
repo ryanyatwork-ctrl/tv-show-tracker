@@ -39,6 +39,24 @@ export default function TVShowTracker() {
     }
   });
   useEffect(() => {
+  (async () => {
+    const sp = getSupabase();
+    const { data: { session } } = await sp.auth.getSession();
+    if (session?.user) {
+      setIsSignedIn(true);
+      setUserEmail(session.user.email || '');
+      pullLibrary();
+    }
+    sp.auth.onAuthStateChange((_e, ses) => {
+      const signedIn = !!ses?.user;
+      setIsSignedIn(signedIn);
+      setUserEmail(signedIn ? (ses.user.email || '') : '');
+      if (signedIn) pullLibrary();
+    });
+  })();
+}, []);
+
+  useEffect(() => {
     try {
       localStorage.setItem("tvShowTrackerData", JSON.stringify(myShows));
     } catch {
