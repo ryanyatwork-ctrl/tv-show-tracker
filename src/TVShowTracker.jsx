@@ -15,9 +15,10 @@ import {
   DollarSign,
 } from "lucide-react";
 import * as XLSX from "xlsx";
+import { getSupabase } from "./lib/supabase"; // <-- optional cloud sync
 
 /**
- * TVShowTracker (drop-in)
+ * TVShowTracker
  * - LocalStorage persistence
  * - TVMaze search
  * - Multi-select add, “already added” badge
@@ -26,10 +27,11 @@ import * as XLSX from "xlsx";
  * - Sort by: added/title/year/genre
  * - Progress bar switches purple->green at 100%
  * - Hamburger menu with Import/Export + Donate links
+ * - Optional Supabase email auth + sync (no-op when not configured)
  */
 
 export default function TVShowTracker() {
-  // ---------- Persistence ----------
+  // ---------- Persistence (local) ----------
   const [myShows, setMyShows] = useState(() => {
     try {
       const saved = localStorage.getItem("tvShowTrackerData");
@@ -39,30 +41,97 @@ export default function TVShowTracker() {
     }
   });
   useEffect(() => {
-  (async () => {
-    const sp = getSupabase();
-    const { data: { session } } = await sp.auth.getSession();
-    if (session?.user) {
-      setIsSignedIn(true);
-      setUserEmail(session.user.email || '');
-      pullLibrary();
-    }
-    sp.auth.onAuthStateChange((_e, ses) => {
-      const signedIn = !!ses?.user;
-      setIsSignedIn(signedIn);
-      setUserEmail(signedIn ? (ses.user.email || '') : '');
-      if (signedIn) pullLibrary();
-    });
-  })();
-}, []);
-
-  useEffect(() => {
     try {
       localStorage.setItem("tvShowTrackerData", JSON.stringify(myShows));
     } catch {
       /* ignore */
     }
   }, [myShows]);
+
+  // ---------- Optional Supabase auth/sync state ----------
+  const [isSignedIn, setIsSignedIn] = useState(false);
+  const [userEmail, setUserEmail] = useState("");
+
+  // Pull current user's library from Supabase (safe no-op if not configured)
+  const pullLibrary = async () => {
+    const sp = getSupabase();
+    if (!sp) return; // Supabase not configured; skip
+
+    try {
+      const { data: userData } = await sp.auth.getUser();
+      const user = userData?.user;
+      if (!user) return;
+
+      const { data, error } = await sp
+        .from("tvtracker_library")
+        .select("payload")
+        .eq("user_id", user.id)
+        .single();
+
+      // If table empty for this user, PGRST116 may be returned; just skip
+      if (error && error.code !== "PGRST116") {
+        console.warn("Supabase pull error:", error);
+        return;
+      }
+      if (data?.payload) setMyShows(data.payload);
+    } catch (err) {
+      console.warn("Supabase pull skipped:", err);
+    }
+  };
+
+  // Push library to Supabase on changes (when signed in)
+  const pushLibrary = async (payload) => {
+    const sp = getSupabase();
+    if (!sp) return;
+
+    try {
+      const { data: userData } = await sp.auth.getUser();
+      const user = userData?.user;
+      if (!user) return;
+
+      const { error } = await sp
+        .from("tvtracker_library")
+        .upsert({ user_id: user.id, payload }, { onConflict: "user_id" });
+
+      if (error) console.warn("Supabase push error:", error);
+    } catch (err) {
+      console.warn("Supabase push skipped:", err);
+    }
+  };
+
+  // When signed in, push on every local change
+  useEffect(() => {
+    if (!isSignedIn) return;
+    pushLibrary(myShows);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSignedIn, myShows]);
+
+  // One-time auth wiring (optional)
+  useEffect(() => {
+    const sp = getSupabase();
+    if (!sp) return; // not configured; skip
+
+    sp.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user) {
+        setIsSignedIn(true);
+        setUserEmail(session.user.email || "");
+        pullLibrary();
+      }
+    });
+
+    const { data: sub } = sp.auth.onAuthStateChange((_event, session) => {
+      const present = !!session?.user;
+      setIsSignedIn(present);
+      setUserEmail(present ? session.user.email || "" : "");
+      if (present) pullLibrary();
+    });
+
+    return () => {
+      // Supabase v2 returns { data: { subscription } }
+      sub?.subscription?.unsubscribe?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ---------- UI state ----------
   const [searchQuery, setSearchQuery] = useState("");
@@ -525,7 +594,7 @@ export default function TVShowTracker() {
                   Donate via PayPal
                 </a>
                 <a
-                  href="https://www.venmo.com/u/BellevilleSystems"     
+                  href="https://www.venmo.com/u/BellevilleSystems"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex items-center gap-2 px-4 py-3 hover:bg-slate-700"
@@ -840,12 +909,10 @@ export default function TVShowTracker() {
                                     ({sp.watched}/{sp.total})
                                   </span>
                                   {done && (
-                                    <>
-                                      <span className="hidden md:inline-flex items-center gap-1 px-2 py-0.5 bg-green-600 rounded-full text-xs font-bold">
-                                        <Check className="w-3 h-3" />
-                                        Complete
-                                      </span>
-                                    </>
+                                    <span className="hidden md:inline-flex items-center gap-1 px-2 py-0.5 bg-green-600 rounded-full text-xs font-bold">
+                                      <Check className="w-3 h-3" />
+                                      Complete
+                                    </span>
                                   )}
                                 </button>
 
