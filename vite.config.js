@@ -2,7 +2,6 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
 export default defineConfig({
-  base: '/',                // important on Pages
+  base: '/',             // keep root for your custom domain
   plugins: [react()],
-  build: { sourcemap: true } // helps debug if needed
 })
