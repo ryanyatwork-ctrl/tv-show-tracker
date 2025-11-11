@@ -6,17 +6,17 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview --port 4173"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.45.4",
-    "lucide-react": "^0.453.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "xlsx": "^0.20.2"
+    "lucide-react": "^0.452.0",
+    "xlsx": "^0.20.3",
+    "@supabase/supabase-js": "^2.45.4"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^4.3.3",
+    "@vitejs/plugin-react": "^4.3.4",
     "vite": "^5.4.10"
   }
 }
