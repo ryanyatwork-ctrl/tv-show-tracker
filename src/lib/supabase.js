@@ -1,14 +1,15 @@
-// src/lib/supabase.js
-let supabase = null;
+import { createClient } from '@supabase/supabase-js';
 
-export async function getSupabase() {
-  if (supabase) return supabase;
+let client = null;
 
-  const url  = import.meta.env.VITE_SUPABASE_URL;
+export function getSupabase() {
+  const url = import.meta.env.VITE_SUPABASE_URL;
   const anon = import.meta.env.VITE_SUPABASE_ANON_KEY;
-  if (!url || !anon) return null; // keeps the app working even if auth isn't configured
-
-  const { createClient } = await import("@supabase/supabase-js");
-  supabase = createClient(url, anon);
-  return supabase;
+  if (!url || !anon) return null; // app still runs fully local
+  if (!client) {
+    client = createClient(url, anon, {
+      auth: { persistSession: true, autoRefreshToken: true }
+    });
+  }
+  return client;
 }
