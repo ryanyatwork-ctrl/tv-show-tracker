@@ -28,6 +28,10 @@ import { getSupabase } from "./lib/supabase";
  * - Sort by: added/title/year/genre
  * - Progress bar switches purple->green at 100%
  * - Hamburger menu with Import/Export + Donate + Account (Google/email magic link)
+ *
+ * Adds:
+ * - Per-show rating (1–5 stars, 0 = unrated) persisted with library
+ * - Recommendations panel based on 4–5★ genres (TVMaze-based + cached)
  */
 
 // ---------- UI preferences persistence (sort/filter) ----------
@@ -54,16 +58,102 @@ function saveUIPrefs(next) {
   }
 }
 
+// ---------- Recommendations cache ----------
+const RECS_CACHE_KEY = "tvtracker.recs.v1";
+const RECS_CACHE_TTL_MS = 1000 * 60 * 60 * 12; // 12 hours
+
+function loadRecsCache() {
+  try {
+    const raw = localStorage.getItem(RECS_CACHE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (!parsed?.ts || !Array.isArray(parsed?.items)) return null;
+    if (Date.now() - parsed.ts > RECS_CACHE_TTL_MS) return null;
+    return parsed.items;
+  } catch {
+    return null;
+  }
+}
+
+function saveRecsCache(items) {
+  try {
+    localStorage.setItem(
+      RECS_CACHE_KEY,
+      JSON.stringify({ ts: Date.now(), items })
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
+// ---------- Data normalization (adds new fields safely) ----------
+function normalizeShow(s) {
+  // Ensure fields exist even for old saved data
+  return {
+    ...s,
+    rating: typeof s.rating === "number" ? s.rating : 0, // 0 = unrated
+  };
+}
+
+function normalizeLibrary(list) {
+  if (!Array.isArray(list)) return [];
+  return list.map(normalizeShow);
+}
+
+// ---------- Stars UI ----------
+function Stars({ value, onChange, onClear, size = "text-lg" }) {
+  return (
+    <div className="flex items-center gap-1">
+      {[1, 2, 3, 4, 5].map((n) => {
+        const active = n <= (value || 0);
+        return (
+          <button
+            key={n}
+            type="button"
+            onClick={() => onChange(n)}
+            className={`${size} leading-none ${
+              active ? "text-yellow-400" : "text-slate-500"
+            } hover:text-yellow-300 transition-colors`}
+            aria-label={`${n} star${n === 1 ? "" : "s"}`}
+            title={
+              n === 1
+                ? "Didn't like it"
+                : n === 5
+                ? "Loved it"
+                : `${n} stars`
+            }
+          >
+            ★
+          </button>
+        );
+      })}
+      <span className="ml-2 text-xs text-slate-400">
+        {value ? `${value}/5` : "Unrated"}
+      </span>
+      {value ? (
+        <button
+          type="button"
+          onClick={onClear}
+          className="ml-2 text-xs text-slate-400 hover:text-slate-200 underline"
+          title="Clear rating"
+        >
+          Clear
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 export default function TVShowTracker() {
   // ---------- Persistence (local) ----------
   const [myShows, setMyShows] = useState(() => {
     try {
       const saved = localStorage.getItem("tvShowTrackerData");
-      return saved ? JSON.parse(saved) : [];
+      return saved ? normalizeLibrary(JSON.parse(saved)) : [];
     } catch {
       return [];
     }
   });
+
   useEffect(() => {
     try {
       localStorage.setItem("tvShowTrackerData", JSON.stringify(myShows));
@@ -99,11 +189,10 @@ export default function TVShowTracker() {
         .single();
 
       if (error && error.code !== "PGRST116") throw error; // PGRST116: no rows
+
       if (data?.data) {
-        // prefer remote if it looks newer; simplest approach: just adopt remote
-        setMyShows(data.data);
+        setMyShows(normalizeLibrary(data.data));
       } else {
-        // create initial row using local data
         await sp.from("tvtracker_library").insert({
           user_id: session.user.id,
           data: myShows || [],
@@ -312,6 +401,115 @@ export default function TVShowTracker() {
     return arr;
   };
 
+  const setShowRating = (id, rating) => {
+    setMyShows((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, rating } : s))
+    );
+  };
+
+  // ---------- Recommendations (based on 4–5★ genres) ----------
+  const [recs, setRecs] = useState(() => loadRecsCache() || []);
+  const [recsLoading, setRecsLoading] = useState(false);
+  const [recsMsg, setRecsMsg] = useState("");
+
+  const lovedGenreProfile = useMemo(() => {
+    const loved = myShows.filter((s) => (s.rating || 0) >= 4);
+    const counts = {};
+    loved.forEach((s) => {
+      (s.genres || []).forEach((g) => {
+        counts[g] = (counts[g] || 0) + 1;
+      });
+    });
+    const ranked = Object.entries(counts)
+      .sort((a, b) => b[1] - a[1])
+      .map(([g]) => g);
+    return {
+      lovedCount: loved.length,
+      topGenres: ranked.slice(0, 6),
+      allGenres: ranked,
+    };
+  }, [myShows]);
+
+  const fetchRecommendations = async () => {
+    const { lovedCount, topGenres } = lovedGenreProfile;
+
+    if (lovedCount < 1 || topGenres.length === 0) {
+      setRecsMsg("Rate at least one show 4★ or 5★ to generate recommendations.");
+      setRecs([]);
+      saveRecsCache([]);
+      return;
+    }
+
+    setRecsMsg("");
+    setRecsLoading(true);
+
+    try {
+      // Pull multiple candidate pools from TVMaze using genre keywords.
+      // This is heuristic (TVMaze doesn't provide perfect similarity endpoints),
+      // but it works well in practice with genre overlap scoring.
+      const queries = topGenres.slice(0, 4);
+      const pools = await Promise.all(
+        queries.map(async (q) => {
+          const res = await fetch(
+            `https://api.tvmaze.com/search/shows?q=${encodeURIComponent(q)}`
+          );
+          const data = await res.json();
+          return Array.isArray(data) ? data : [];
+        })
+      );
+
+      const existingIds = new Set(myShows.map((s) => s.id));
+      const topSet = new Set(topGenres.map((g) => g.toLowerCase()));
+
+      const candidates = new Map(); // id -> show data + score
+
+      for (const pool of pools) {
+        for (const item of pool) {
+          const s = item?.show;
+          if (!s?.id || !s?.name) continue;
+          if (existingIds.has(s.id)) continue; // don't recommend what you already have
+
+          const genres = Array.isArray(s.genres) ? s.genres : [];
+          let score = 0;
+          for (const g of genres) {
+            if (topSet.has(String(g).toLowerCase())) score += 3;
+          }
+
+          // tiny boost if name matches one of the query genres (usually redundant but harmless)
+          for (const q of queries) {
+            if (s.name.toLowerCase().includes(q.toLowerCase())) score += 1;
+          }
+
+          const prev = candidates.get(s.id);
+          if (!prev || score > prev.score) {
+            candidates.set(s.id, {
+              id: s.id,
+              name: s.name,
+              premiered: s.premiered || "",
+              genres: genres,
+              image: s.image?.medium || s.image?.original || "",
+              summary: s.summary || "",
+              score,
+            });
+          }
+        }
+      }
+
+      const sorted = Array.from(candidates.values())
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 18);
+
+      setRecs(sorted);
+      saveRecsCache(sorted);
+      setRecsMsg(sorted.length ? "" : "No recommendations found. Try rating more shows 4★–5★.");
+    } catch (e) {
+      console.warn("fetchRecommendations failed:", e?.message || e);
+      setRecsMsg("Could not fetch recommendations right now.");
+    } finally {
+      setRecsLoading(false);
+    }
+  };
+
   // ---------- Search ----------
   const doSearch = async (q) => {
     if (!q.trim()) {
@@ -320,7 +518,9 @@ export default function TVShowTracker() {
     }
     setIsSearching(true);
     try {
-      const res = await fetch(`https://api.tvmaze.com/search/shows?q=${encodeURIComponent(q)}`);
+      const res = await fetch(
+        `https://api.tvmaze.com/search/shows?q=${encodeURIComponent(q)}`
+      );
       const data = await res.json();
       setSearchResults(Array.isArray(data) ? data : []);
     } catch {
@@ -346,7 +546,9 @@ export default function TVShowTracker() {
 
   const fetchShowDetails = async (id) => {
     try {
-      const resp = await fetch(`https://api.tvmaze.com/shows/${id}?embed=episodes`);
+      const resp = await fetch(
+        `https://api.tvmaze.com/shows/${id}?embed=episodes`
+      );
       return await resp.json();
     } catch {
       return null;
@@ -383,6 +585,7 @@ export default function TVShowTracker() {
       seasons: episodesBySeason,
       addedDate: new Date().toISOString(),
       rewatches: [],
+      rating: 0, // 0 = unrated, 1–5 stars
       // currentRewatch undefined means "first watch"
     };
 
@@ -415,7 +618,9 @@ export default function TVShowTracker() {
   };
 
   const updateSource = (id, value) => {
-    setMyShows((prev) => prev.map((s) => (s.id === id ? { ...s, source: value } : s)));
+    setMyShows((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, source: value } : s))
+    );
   };
 
   const toggleEpisodeWatched = (id, season, epId) => {
@@ -517,7 +722,9 @@ export default function TVShowTracker() {
   };
 
   const switchToWatch = (id, watchNumber) => {
-    setMyShows((prev) => prev.map((s) => (s.id === id ? { ...s, currentRewatch: watchNumber } : s)));
+    setMyShows((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, currentRewatch: watchNumber } : s))
+    );
   };
 
   // ---------- Export / Import ----------
@@ -540,6 +747,7 @@ export default function TVShowTracker() {
       "Premiered",
       "Genres",
       "Source",
+      "Rating",
       "Watched",
       "Total",
       "Progress %",
@@ -560,6 +768,7 @@ export default function TVShowTracker() {
         show.premiered ? show.premiered.slice(0, 4) : "",
         (show.genres || []).join(", "),
         show.source || "",
+        show.rating || "",
         watched,
         total,
         progress,
@@ -574,6 +783,7 @@ export default function TVShowTracker() {
       { wch: 8 },
       { wch: 22 },
       { wch: 16 },
+      { wch: 8 },
       { wch: 9 },
       { wch: 9 },
       { wch: 11 },
@@ -581,7 +791,7 @@ export default function TVShowTracker() {
       { wch: 10 },
     ];
     for (let r = 1; r < rows.length; r++) {
-      const cell = XLSX.utils.encode_cell({ r, c: 6 });
+      const cell = XLSX.utils.encode_cell({ r, c: 7 });
       if (ws[cell]) ws[cell].z = "0%";
     }
     XLSX.utils.book_append_sheet(wb, ws, "Summary");
@@ -594,7 +804,7 @@ export default function TVShowTracker() {
     const reader = new FileReader();
     reader.onload = (ev) => {
       try {
-        const data = JSON.parse(ev.target.result);
+        const data = normalizeLibrary(JSON.parse(ev.target.result));
         setMyShows(data);
         alert("Imported!");
       } catch {
@@ -697,7 +907,9 @@ export default function TVShowTracker() {
                           >
                             {emailSending ? "Sending…" : "Send magic link"}
                           </button>
-                          {emailMsg && <div className="text-xs text-slate-300">{emailMsg}</div>}
+                          {emailMsg && (
+                            <div className="text-xs text-slate-300">{emailMsg}</div>
+                          )}
                         </div>
                       )}
                     </div>
@@ -712,7 +924,12 @@ export default function TVShowTracker() {
                   <label className="flex items-center gap-2 px-4 py-3 hover:bg-slate-700 cursor-pointer">
                     <Upload className="w-4 h-4" />
                     <span>Import Data (JSON)</span>
-                    <input type="file" accept=".json" onChange={importData} className="hidden" />
+                    <input
+                      type="file"
+                      accept=".json"
+                      onChange={importData}
+                      className="hidden"
+                    />
                   </label>
 
                   {/* Export */}
@@ -762,8 +979,113 @@ export default function TVShowTracker() {
         </div>
 
         {/* Subtitle */}
-        <p className="text-slate-300 mt-2">Never lose track of what you're watching</p>
+        <p className="text-slate-300 mt-2">
+          Never lose track of what you're watching
+        </p>
       </header>
+
+      {/* RECOMMENDATIONS */}
+      <div className="mb-8 bg-slate-800 rounded-lg p-6 shadow-xl">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-semibold flex items-center gap-2">
+              <span className="text-yellow-300">★</span>
+              Recommendations
+            </h2>
+            <p className="text-sm text-slate-300 mt-1">
+              Based on your 4–5★ shows{" "}
+              {lovedGenreProfile.topGenres.length
+                ? `(top genres: ${lovedGenreProfile.topGenres.join(", ")})`
+                : ""}
+            </p>
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              onClick={fetchRecommendations}
+              disabled={recsLoading}
+              className="px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 disabled:opacity-50 font-semibold"
+              title="Fetch new show recommendations from TVMaze"
+            >
+              {recsLoading ? "Generating…" : "Generate"}
+            </button>
+            <button
+              onClick={() => {
+                setRecs([]);
+                saveRecsCache([]);
+                setRecsMsg("");
+              }}
+              className="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600"
+              title="Clear cached recommendations"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+
+        {recsMsg && <div className="mt-3 text-sm text-slate-300">{recsMsg}</div>}
+
+        {!recsMsg && lovedGenreProfile.lovedCount === 0 && (
+          <div className="mt-3 text-sm text-slate-300">
+            Rate a show 4★ or 5★ and hit <strong>Generate</strong>.
+          </div>
+        )}
+
+        {recs.length > 0 && (
+          <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+            {recs.map((r) => (
+              <div
+                key={r.id}
+                className="bg-slate-700 rounded-lg p-4 border border-slate-600"
+              >
+                <div className="flex gap-3">
+                  {r.image ? (
+                    <img
+                      src={r.image}
+                      alt={r.name}
+                      className="w-16 h-24 object-cover rounded"
+                    />
+                  ) : (
+                    <div className="w-16 h-24 rounded bg-slate-600 flex items-center justify-center text-slate-300">
+                      <Tv className="w-6 h-6" />
+                    </div>
+                  )}
+                  <div className="flex-1">
+                    <div className="font-semibold">{r.name}</div>
+                    <div className="text-xs text-slate-300 mt-1">
+                      {r.premiered ? r.premiered.slice(0, 4) : ""}{" "}
+                      {r.genres?.length ? `• ${r.genres.join(", ")}` : ""}
+                    </div>
+                    <div className="mt-3 flex gap-2 items-center">
+                      <button
+                        onClick={() =>
+                          addShow(
+                            {
+                              id: r.id,
+                              name: r.name,
+                              image: r.image
+                                ? { medium: r.image, original: r.image }
+                                : undefined,
+                            },
+                            false
+                          )
+                        }
+                        disabled={isShowAdded(r.id)}
+                        className="px-3 py-2 rounded bg-green-600 hover:bg-green-700 disabled:opacity-50 text-sm font-semibold"
+                      >
+                        {isShowAdded(r.id) ? "Added" : "Add"}
+                      </button>
+                      <span className="text-xs text-slate-400" title="Relevance score">
+                        score {r.score}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       {/* SEARCH / ADD */}
       <div className="mb-8 bg-slate-800 rounded-lg p-6 shadow-xl">
@@ -795,7 +1117,9 @@ export default function TVShowTracker() {
           </div>
         )}
 
-        {isSearching && <div className="mt-4 text-center text-slate-400">Searching…</div>}
+        {isSearching && (
+          <div className="mt-4 text-center text-slate-400">Searching…</div>
+        )}
 
         {!!searchResults.length && (
           <div className="mt-4 space-y-2 max-h-96 overflow-y-auto">
@@ -860,7 +1184,9 @@ export default function TVShowTracker() {
       {/* SORT / FILTER */}
       {myShows.length > 0 && (
         <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-          <h2 className="text-2xl font-semibold">My Shows ({getSortedShows(myShows).length})</h2>
+          <h2 className="text-2xl font-semibold">
+            My Shows ({getSortedShows(myShows).length})
+          </h2>
           <div className="flex gap-3">
             <select
               value={sortBy}
@@ -890,7 +1216,9 @@ export default function TVShowTracker() {
         <div className="text-center py-12 bg-slate-800 rounded-lg">
           <Tv className="w-16 h-16 mx-auto mb-4 text-slate-600" />
           <p className="text-slate-400">
-            {myShows.length ? "No shows match the current filters." : "No shows yet. Add your first above!"}
+            {myShows.length
+              ? "No shows match the current filters."
+              : "No shows yet. Add your first above!"}
           </p>
         </div>
       ) : (
@@ -913,7 +1241,11 @@ export default function TVShowTracker() {
                   {/* Top row */}
                   <div className="flex items-start gap-4">
                     {show.image && (
-                      <img src={show.image} alt={show.name} className="w-20 h-28 object-cover rounded" />
+                      <img
+                        src={show.image}
+                        alt={show.name}
+                        className="w-20 h-28 object-cover rounded"
+                      />
                     )}
                     <div className="flex-1">
                       <div className="flex items-start justify-between mb-2">
@@ -929,13 +1261,24 @@ export default function TVShowTracker() {
                             {hasRewatches && (
                               <span className="flex items-center gap-1 px-2 py-1 bg-blue-600 rounded-full text-xs font-bold">
                                 <RotateCcw className="w-3 h-3" />
-                                {show.rewatches.length} rewatch{show.rewatches.length > 1 ? "es" : ""}
+                                {show.rewatches.length} rewatch
+                                {show.rewatches.length > 1 ? "es" : ""}
                               </span>
                             )}
                           </div>
                           <p className="text-sm text-slate-400">
-                            {(show.genres || []).join(", ")} • {show.premiered?.slice(0, 4) || ""}
+                            {(show.genres || []).join(", ")} •{" "}
+                            {show.premiered?.slice(0, 4) || ""}
                           </p>
+
+                          {/* Rating */}
+                          <div className="mt-2">
+                            <Stars
+                              value={show.rating || 0}
+                              onChange={(n) => setShowRating(show.id, n)}
+                              onClear={() => setShowRating(show.id, 0)}
+                            />
+                          </div>
                         </div>
 
                         <button
@@ -953,7 +1296,9 @@ export default function TVShowTracker() {
                           <span className="text-sm text-slate-400">Viewing:</span>
                           <select
                             value={show.currentRewatch || 1}
-                            onChange={(e) => switchToWatch(show.id, parseInt(e.target.value))}
+                            onChange={(e) =>
+                              switchToWatch(show.id, parseInt(e.target.value))
+                            }
                             className="px-3 py-1 bg-slate-700 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                           >
                             <option value={1}>First Watch</option>
@@ -969,7 +1314,12 @@ export default function TVShowTracker() {
                       {/* Progress bar */}
                       <div className="mb-3">
                         <div className="flex justify-between text-sm text-slate-400 mb-1">
-                          <span>Progress {show.currentRewatch > 1 ? `(Watch #${show.currentRewatch})` : ""}</span>
+                          <span>
+                            Progress{" "}
+                            {show.currentRewatch > 1
+                              ? `(Watch #${show.currentRewatch})`
+                              : ""}
+                          </span>
                           <span>
                             {progress.watched} / {progress.total} episodes ({pct}%)
                           </span>
@@ -986,7 +1336,9 @@ export default function TVShowTracker() {
 
                       {/* Where watching */}
                       <div className="mb-3">
-                        <label className="text-sm text-slate-400 mb-1 block">Watching on:</label>
+                        <label className="text-sm text-slate-400 mb-1 block">
+                          Watching on:
+                        </label>
                         <input
                           value={show.source}
                           onChange={(e) => updateSource(show.id, e.target.value)}
@@ -1001,7 +1353,11 @@ export default function TVShowTracker() {
                           onClick={() => setExpandedShow(isExpanded ? null : show.id)}
                           className="flex items-center gap-2 text-purple-400 hover:text-purple-300"
                         >
-                          {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                          {isExpanded ? (
+                            <ChevronDown className="w-4 h-4" />
+                          ) : (
+                            <ChevronRight className="w-4 h-4" />
+                          )}
                           {isExpanded ? "Hide" : "Show"} Seasons & Episodes
                         </button>
 
@@ -1037,7 +1393,11 @@ export default function TVShowTracker() {
                                   onClick={() => setExpandedSeason(isOpen ? null : sid)}
                                   className="flex items-center gap-2"
                                 >
-                                  {isOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                                  {isOpen ? (
+                                    <ChevronDown className="w-4 h-4" />
+                                  ) : (
+                                    <ChevronRight className="w-4 h-4" />
+                                  )}
                                   <span className="font-semibold">Season {sNum}</span>
                                   <span className="text-sm text-slate-300">
                                     ({sp.watched}/{sp.total})
@@ -1078,9 +1438,13 @@ export default function TVShowTracker() {
                                       className="flex items-center gap-3 p-2 bg-slate-600 rounded hover:bg-slate-500 transition-colors"
                                     >
                                       <button
-                                        onClick={() => toggleEpisodeWatched(show.id, sNum, ep.id)}
+                                        onClick={() =>
+                                          toggleEpisodeWatched(show.id, sNum, ep.id)
+                                        }
                                         className={`w-6 h-6 rounded border-2 flex items-center justify-center transition-colors ${
-                                          ep.watched ? "bg-purple-600 border-purple-600" : "border-slate-400"
+                                          ep.watched
+                                            ? "bg-purple-600 border-purple-600"
+                                            : "border-slate-400"
                                         }`}
                                       >
                                         {ep.watched && <Check className="w-4 h-4" />}
@@ -1091,7 +1455,11 @@ export default function TVShowTracker() {
                                             {ep.number}. {ep.name}
                                           </span>
                                         </div>
-                                        {ep.airdate && <span className="text-xs text-slate-300">{ep.airdate}</span>}
+                                        {ep.airdate && (
+                                          <span className="text-xs text-slate-300">
+                                            {ep.airdate}
+                                          </span>
+                                        )}
                                       </div>
                                     </div>
                                   ))}
