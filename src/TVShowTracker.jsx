@@ -30,6 +30,30 @@ import { getSupabase } from "./lib/supabase";
  * - Hamburger menu with Import/Export + Donate + Account (Google/email magic link)
  */
 
+// ---------- UI preferences persistence (sort/filter) ----------
+const UI_PREFS_KEY = "tvtracker.uiPrefs.v1";
+
+function loadUIPrefs() {
+  try {
+    const raw = localStorage.getItem(UI_PREFS_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return {
+      filterStatus: parsed?.filterStatus ?? "in-progress", // default: In Progress
+      sortBy: parsed?.sortBy ?? "title", // default: Title (A–Z)
+    };
+  } catch {
+    return { filterStatus: "in-progress", sortBy: "title" };
+  }
+}
+
+function saveUIPrefs(next) {
+  try {
+    localStorage.setItem(UI_PREFS_KEY, JSON.stringify(next));
+  } catch {
+    /* ignore */
+  }
+}
+
 export default function TVShowTracker() {
   // ---------- Persistence (local) ----------
   const [myShows, setMyShows] = useState(() => {
@@ -43,7 +67,9 @@ export default function TVShowTracker() {
   useEffect(() => {
     try {
       localStorage.setItem("tvShowTrackerData", JSON.stringify(myShows));
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }, [myShows]);
 
   // ---------- Auth & cloud sync ----------
@@ -61,7 +87,9 @@ export default function TVShowTracker() {
     if (!sp) return;
     pullingRef.current = true;
     try {
-      const { data: { session } } = await sp.auth.getSession();
+      const {
+        data: { session },
+      } = await sp.auth.getSession();
       if (!session?.user) return;
 
       const { data, error } = await sp
@@ -94,7 +122,9 @@ export default function TVShowTracker() {
     const sp = getSupabase();
     if (!sp) return;
     try {
-      const { data: { session } } = await sp.auth.getSession();
+      const {
+        data: { session },
+      } = await sp.auth.getSession();
       if (!session?.user) return;
       pushingRef.current = true;
       await sp
@@ -113,7 +143,9 @@ export default function TVShowTracker() {
       const sp = getSupabase();
       if (!sp) return;
 
-      const { data: { session } } = await sp.auth.getSession();
+      const {
+        data: { session },
+      } = await sp.auth.getSession();
       if (session?.user) {
         setIsSignedIn(true);
         setUserEmail(session.user.email || "");
@@ -123,7 +155,7 @@ export default function TVShowTracker() {
       sp.auth.onAuthStateChange((_e, ses) => {
         const signed = !!ses?.user;
         setIsSignedIn(signed);
-        setUserEmail(signed ? (ses.user.email || "") : "");
+        setUserEmail(signed ? ses.user.email || "" : "");
         if (signed) pullLibrary();
       });
     })();
@@ -192,7 +224,9 @@ export default function TVShowTracker() {
       const sp = getSupabase();
       if (!sp) return;
       await sp.auth.signOut();
-    } catch {/* ignore */}
+    } catch {
+      /* ignore */
+    }
   };
 
   // ---------- UI state ----------
@@ -204,8 +238,12 @@ export default function TVShowTracker() {
   const [expandedShow, setExpandedShow] = useState(null);
   const [expandedSeason, setExpandedSeason] = useState(null);
 
-  const [filterStatus, setFilterStatus] = useState("all"); // all | in-progress | completed
-  const [sortBy, setSortBy] = useState("added");          // added | title | year | genre
+  // Persisted sort/filter (defaults to In Progress + Title)
+  const [filterStatus, setFilterStatus] = useState(() => loadUIPrefs().filterStatus); // all | in-progress | completed
+  const [sortBy, setSortBy] = useState(() => loadUIPrefs().sortBy); // added | title | year | genre
+  useEffect(() => {
+    saveUIPrefs({ filterStatus, sortBy });
+  }, [filterStatus, sortBy]);
 
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef(null);
@@ -228,7 +266,7 @@ export default function TVShowTracker() {
     }
     const rw = show.rewatches?.find((r) => r.watchNumber === show.currentRewatch);
     return rw || { watchNumber: 1, seasons: show.seasons };
-    };
+  };
 
   const getWatchProgress = (show) => {
     const { seasons } = getCurrentWatchData(show);
@@ -282,9 +320,7 @@ export default function TVShowTracker() {
     }
     setIsSearching(true);
     try {
-      const res = await fetch(
-        `https://api.tvmaze.com/search/shows?q=${encodeURIComponent(q)}`
-      );
+      const res = await fetch(`https://api.tvmaze.com/search/shows?q=${encodeURIComponent(q)}`);
       const data = await res.json();
       setSearchResults(Array.isArray(data) ? data : []);
     } catch {
@@ -310,9 +346,7 @@ export default function TVShowTracker() {
 
   const fetchShowDetails = async (id) => {
     try {
-      const resp = await fetch(
-        `https://api.tvmaze.com/shows/${id}?embed=episodes`
-      );
+      const resp = await fetch(`https://api.tvmaze.com/shows/${id}?embed=episodes`);
       return await resp.json();
     } catch {
       return null;
@@ -381,9 +415,7 @@ export default function TVShowTracker() {
   };
 
   const updateSource = (id, value) => {
-    setMyShows((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, source: value } : s))
-    );
+    setMyShows((prev) => prev.map((s) => (s.id === id ? { ...s, source: value } : s)));
   };
 
   const toggleEpisodeWatched = (id, season, epId) => {
@@ -450,10 +482,7 @@ export default function TVShowTracker() {
                   ...rw,
                   seasons: {
                     ...rw.seasons,
-                    [season]: rw.seasons[season].map((e) => ({
-                      ...e,
-                      watched,
-                    })),
+                    [season]: rw.seasons[season].map((e) => ({ ...e, watched })),
                   },
                 }
               : rw
@@ -488,9 +517,7 @@ export default function TVShowTracker() {
   };
 
   const switchToWatch = (id, watchNumber) => {
-    setMyShows((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, currentRewatch: watchNumber } : s))
-    );
+    setMyShows((prev) => prev.map((s) => (s.id === id ? { ...s, currentRewatch: watchNumber } : s)));
   };
 
   // ---------- Export / Import ----------
@@ -670,9 +697,7 @@ export default function TVShowTracker() {
                           >
                             {emailSending ? "Sending…" : "Send magic link"}
                           </button>
-                          {emailMsg && (
-                            <div className="text-xs text-slate-300">{emailMsg}</div>
-                          )}
+                          {emailMsg && <div className="text-xs text-slate-300">{emailMsg}</div>}
                         </div>
                       )}
                     </div>
@@ -737,9 +762,7 @@ export default function TVShowTracker() {
         </div>
 
         {/* Subtitle */}
-        <p className="text-slate-300 mt-2">
-          Never lose track of what you're watching
-        </p>
+        <p className="text-slate-300 mt-2">Never lose track of what you're watching</p>
       </header>
 
       {/* SEARCH / ADD */}
@@ -837,9 +860,7 @@ export default function TVShowTracker() {
       {/* SORT / FILTER */}
       {myShows.length > 0 && (
         <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-          <h2 className="text-2xl font-semibold">
-            My Shows ({getSortedShows(myShows).length})
-          </h2>
+          <h2 className="text-2xl font-semibold">My Shows ({getSortedShows(myShows).length})</h2>
           <div className="flex gap-3">
             <select
               value={sortBy}
@@ -892,11 +913,7 @@ export default function TVShowTracker() {
                   {/* Top row */}
                   <div className="flex items-start gap-4">
                     {show.image && (
-                      <img
-                        src={show.image}
-                        alt={show.name}
-                        className="w-20 h-28 object-cover rounded"
-                      />
+                      <img src={show.image} alt={show.name} className="w-20 h-28 object-cover rounded" />
                     )}
                     <div className="flex-1">
                       <div className="flex items-start justify-between mb-2">
@@ -912,8 +929,7 @@ export default function TVShowTracker() {
                             {hasRewatches && (
                               <span className="flex items-center gap-1 px-2 py-1 bg-blue-600 rounded-full text-xs font-bold">
                                 <RotateCcw className="w-3 h-3" />
-                                {show.rewatches.length} rewatch
-                                {show.rewatches.length > 1 ? "es" : ""}
+                                {show.rewatches.length} rewatch{show.rewatches.length > 1 ? "es" : ""}
                               </span>
                             )}
                           </div>
@@ -953,10 +969,7 @@ export default function TVShowTracker() {
                       {/* Progress bar */}
                       <div className="mb-3">
                         <div className="flex justify-between text-sm text-slate-400 mb-1">
-                          <span>
-                            Progress{" "}
-                            {show.currentRewatch > 1 ? `(Watch #${show.currentRewatch})` : ""}
-                          </span>
+                          <span>Progress {show.currentRewatch > 1 ? `(Watch #${show.currentRewatch})` : ""}</span>
                           <span>
                             {progress.watched} / {progress.total} episodes ({pct}%)
                           </span>
@@ -988,11 +1001,7 @@ export default function TVShowTracker() {
                           onClick={() => setExpandedShow(isExpanded ? null : show.id)}
                           className="flex items-center gap-2 text-purple-400 hover:text-purple-300"
                         >
-                          {isExpanded ? (
-                            <ChevronDown className="w-4 h-4" />
-                          ) : (
-                            <ChevronRight className="w-4 h-4" />
-                          )}
+                          {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                           {isExpanded ? "Hide" : "Show"} Seasons & Episodes
                         </button>
 
@@ -1028,22 +1037,16 @@ export default function TVShowTracker() {
                                   onClick={() => setExpandedSeason(isOpen ? null : sid)}
                                   className="flex items-center gap-2"
                                 >
-                                  {isOpen ? (
-                                    <ChevronDown className="w-4 h-4" />
-                                  ) : (
-                                    <ChevronRight className="w-4 h-4" />
-                                  )}
+                                  {isOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                                   <span className="font-semibold">Season {sNum}</span>
                                   <span className="text-sm text-slate-300">
                                     ({sp.watched}/{sp.total})
                                   </span>
                                   {done && (
-                                    <>
-                                      <span className="hidden md:inline-flex items-center gap-1 px-2 py-0.5 bg-green-600 rounded-full text-xs font-bold">
-                                        <Check className="w-3 h-3" />
-                                        Complete
-                                      </span>
-                                    </>
+                                    <span className="hidden md:inline-flex items-center gap-1 px-2 py-0.5 bg-green-600 rounded-full text-xs font-bold">
+                                      <Check className="w-3 h-3" />
+                                      Complete
+                                    </span>
                                   )}
                                 </button>
 
@@ -1077,9 +1080,7 @@ export default function TVShowTracker() {
                                       <button
                                         onClick={() => toggleEpisodeWatched(show.id, sNum, ep.id)}
                                         className={`w-6 h-6 rounded border-2 flex items-center justify-center transition-colors ${
-                                          ep.watched
-                                            ? "bg-purple-600 border-purple-600"
-                                            : "border-slate-400"
+                                          ep.watched ? "bg-purple-600 border-purple-600" : "border-slate-400"
                                         }`}
                                       >
                                         {ep.watched && <Check className="w-4 h-4" />}
@@ -1090,11 +1091,7 @@ export default function TVShowTracker() {
                                             {ep.number}. {ep.name}
                                           </span>
                                         </div>
-                                        {ep.airdate && (
-                                          <span className="text-xs text-slate-300">
-                                            {ep.airdate}
-                                          </span>
-                                        )}
+                                        {ep.airdate && <span className="text-xs text-slate-300">{ep.airdate}</span>}
                                       </div>
                                     </div>
                                   ))}
