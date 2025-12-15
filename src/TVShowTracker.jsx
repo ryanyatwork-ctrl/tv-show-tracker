@@ -507,15 +507,18 @@ export default function TVShowTracker() {
     }
   };
 
-  const signOut = async () => {
-    try {
-      const sp = getSupabase();
-      if (!sp) return;
-      await sp.auth.signOut();
-    } catch {
-      /* ignore */
-    }
-  };
+const signOut = async () => {
+  try {
+    const sp = getSupabase();
+    console.log("Signing out, supabase:", sp);
+    if (!sp) return;
+    const { error } = await sp.auth.signOut();
+    console.log("Sign out result:", error || "OK");
+  } catch (e) {
+    console.error("Sign out failed:", e);
+  }
+};
+
 
   // ---------- UI state ----------
   const [searchQuery, setSearchQuery] = useState("");
