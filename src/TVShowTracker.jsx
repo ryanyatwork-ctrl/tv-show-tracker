@@ -32,24 +32,25 @@ import { getSupabase } from "./lib/supabase";
  * Adds:
  * - Per-show rating (1–5 stars, 0 = unrated) persisted with library
  * - Recommendations panel based on 4–5★ genres (TVMaze-based + cached)
+ * - Cloud sync controls: Sync Now (push), Pull from Cloud
+ * - Last sync time display
+ * - Conflict detection + resolution (Cloud wins / This device wins / Merge)
  */
 
 // ---------- UI preferences persistence (sort/filter) ----------
 const UI_PREFS_KEY = "tvtracker.uiPrefs.v1";
-
 function loadUIPrefs() {
   try {
     const raw = localStorage.getItem(UI_PREFS_KEY);
     const parsed = raw ? JSON.parse(raw) : null;
     return {
-      filterStatus: parsed?.filterStatus ?? "in-progress", // default: In Progress
-      sortBy: parsed?.sortBy ?? "title", // default: Title (A–Z)
+      filterStatus: parsed?.filterStatus ?? "in-progress",
+      sortBy: parsed?.sortBy ?? "title",
     };
   } catch {
     return { filterStatus: "in-progress", sortBy: "title" };
   }
 }
-
 function saveUIPrefs(next) {
   try {
     localStorage.setItem(UI_PREFS_KEY, JSON.stringify(next));
@@ -61,7 +62,6 @@ function saveUIPrefs(next) {
 // ---------- Recommendations cache ----------
 const RECS_CACHE_KEY = "tvtracker.recs.v1";
 const RECS_CACHE_TTL_MS = 1000 * 60 * 60 * 12; // 12 hours
-
 function loadRecsCache() {
   try {
     const raw = localStorage.getItem(RECS_CACHE_KEY);
@@ -73,30 +73,103 @@ function loadRecsCache() {
     return null;
   }
 }
-
 function saveRecsCache(items) {
   try {
-    localStorage.setItem(
-      RECS_CACHE_KEY,
-      JSON.stringify({ ts: Date.now(), items })
-    );
+    localStorage.setItem(RECS_CACHE_KEY, JSON.stringify({ ts: Date.now(), items }));
   } catch {
     /* ignore */
   }
 }
 
-// ---------- Data normalization (adds new fields safely) ----------
-function normalizeShow(s) {
-  // Ensure fields exist even for old saved data
-  return {
-    ...s,
-    rating: typeof s.rating === "number" ? s.rating : 0, // 0 = unrated
-  };
+// ---------- Sync meta ----------
+const SYNC_META_KEY = "tvtracker.syncMeta.v1";
+function randomId() {
+  // simple device id; good enough for client-side conflict detection
+  return "dev_" + Math.random().toString(16).slice(2) + "_" + Date.now().toString(16);
+}
+function loadSyncMeta() {
+  try {
+    const raw = localStorage.getItem(SYNC_META_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    const deviceId = parsed?.deviceId || randomId();
+    const next = {
+      deviceId,
+      lastPulledAt: parsed?.lastPulledAt || 0,
+      lastPushedAt: parsed?.lastPushedAt || 0,
+      lastLocalChangeAt: parsed?.lastLocalChangeAt || 0,
+      lastSeenRemoteUpdatedAt: parsed?.lastSeenRemoteUpdatedAt || 0,
+    };
+    localStorage.setItem(SYNC_META_KEY, JSON.stringify(next));
+    return next;
+  } catch {
+    const next = {
+      deviceId: randomId(),
+      lastPulledAt: 0,
+      lastPushedAt: 0,
+      lastLocalChangeAt: 0,
+      lastSeenRemoteUpdatedAt: 0,
+    };
+    try {
+      localStorage.setItem(SYNC_META_KEY, JSON.stringify(next));
+    } catch {
+      /* ignore */
+    }
+    return next;
+  }
+}
+function saveSyncMeta(patch) {
+  try {
+    const cur = loadSyncMeta();
+    const next = { ...cur, ...patch };
+    localStorage.setItem(SYNC_META_KEY, JSON.stringify(next));
+    return next;
+  } catch {
+    return null;
+  }
+}
+function fmtTime(ts) {
+  if (!ts) return "Never";
+  try {
+    return new Date(ts).toLocaleString();
+  } catch {
+    return "Never";
+  }
 }
 
+// ---------- Data normalization (supports legacy arrays, and v2 envelopes) ----------
+function normalizeShow(s) {
+  return {
+    ...s,
+    rating: typeof s.rating === "number" ? s.rating : 0,
+  };
+}
 function normalizeLibrary(list) {
   if (!Array.isArray(list)) return [];
   return list.map(normalizeShow);
+}
+function unwrapRemoteData(remoteData) {
+  // Backward compatible:
+  // old: data = [shows...]
+  // new: data = { v:2, updatedAt, deviceId, shows:[...] }
+  if (Array.isArray(remoteData)) {
+    return { shows: normalizeLibrary(remoteData), updatedAt: 0, deviceId: "" };
+  }
+  if (remoteData && typeof remoteData === "object" && Array.isArray(remoteData.shows)) {
+    return {
+      shows: normalizeLibrary(remoteData.shows),
+      updatedAt: typeof remoteData.updatedAt === "number" ? remoteData.updatedAt : 0,
+      deviceId: typeof remoteData.deviceId === "string" ? remoteData.deviceId : "",
+    };
+  }
+  return { shows: [], updatedAt: 0, deviceId: "" };
+}
+function makeRemoteEnvelope(shows, meta) {
+  return {
+    v: 2,
+    updatedAt: Date.now(),
+    deviceId: meta?.deviceId || "",
+    shows: shows,
+  };
 }
 
 // ---------- Stars UI ----------
@@ -126,9 +199,7 @@ function Stars({ value, onChange, onClear, size = "text-lg" }) {
           </button>
         );
       })}
-      <span className="ml-2 text-xs text-slate-400">
-        {value ? `${value}/5` : "Unrated"}
-      </span>
+      <span className="ml-2 text-xs text-slate-400">{value ? `${value}/5` : "Unrated"}</span>
       {value ? (
         <button
           type="button"
@@ -143,7 +214,43 @@ function Stars({ value, onChange, onClear, size = "text-lg" }) {
   );
 }
 
+// ---------- Merge helper (simple but sane) ----------
+function watchedCount(show) {
+  try {
+    const seasons = show?.seasons || {};
+    let n = 0;
+    Object.values(seasons).forEach((eps) => {
+      n += (eps || []).filter((e) => e?.watched).length;
+    });
+    return n;
+  } catch {
+    return 0;
+  }
+}
+function mergeLibraries(localShows, remoteShows) {
+  const map = new Map();
+  for (const s of remoteShows) map.set(s.id, s);
+  for (const s of localShows) {
+    if (!map.has(s.id)) {
+      map.set(s.id, s);
+    } else {
+      const r = map.get(s.id);
+      // Prefer the one with more watched episodes; if tied, prefer the one with higher rating; else remote.
+      const lw = watchedCount(s);
+      const rw = watchedCount(r);
+      if (lw > rw) map.set(s.id, s);
+      else if (lw === rw && (s.rating || 0) > (r.rating || 0)) map.set(s.id, s);
+    }
+  }
+  return Array.from(map.values());
+}
+
 export default function TVShowTracker() {
+  const syncMetaRef = useRef(loadSyncMeta());
+
+  // IMPORTANT: prevent pushing stale local data before first pull completes
+  const hasPulledFromCloudRef = useRef(false);
+
   // ---------- Persistence (local) ----------
   const [myShows, setMyShows] = useState(() => {
     try {
@@ -155,6 +262,9 @@ export default function TVShowTracker() {
   });
 
   useEffect(() => {
+    // Track local changes for conflict detection
+    syncMetaRef.current = saveSyncMeta({ lastLocalChangeAt: Date.now() }) || syncMetaRef.current;
+
     try {
       localStorage.setItem("tvShowTrackerData", JSON.stringify(myShows));
     } catch {
@@ -166,21 +276,39 @@ export default function TVShowTracker() {
   const [isSignedIn, setIsSignedIn] = useState(false);
   const [userEmail, setUserEmail] = useState("");
 
+  // sync status UI
+  const [syncMsg, setSyncMsg] = useState("");
+  const [syncBusy, setSyncBusy] = useState(false);
+  const [lastPulledAt, setLastPulledAt] = useState(syncMetaRef.current.lastPulledAt || 0);
+  const [lastPushedAt, setLastPushedAt] = useState(syncMetaRef.current.lastPushedAt || 0);
+
+  // conflict UI
+  const [conflict, setConflict] = useState(null); // { remoteUpdatedAt, remoteDeviceId, localChangedAt, remoteCount, localCount }
+
   // fetch/push guards
   const pullingRef = useRef(false);
   const pushingRef = useRef(false);
 
-  // Pull cloud library
-  const pullLibrary = async () => {
-    if (pullingRef.current) return;
+  const getSessionUserId = async () => {
     const sp = getSupabase();
-    if (!sp) return;
+    if (!sp) return null;
+    const { data: { session } } = await sp.auth.getSession();
+    return session?.user?.id || null;
+  };
+
+  // Pull cloud library (optionally detect conflicts)
+  const pullLibrary = async ({ allowOverwrite = true } = {}) => {
+    if (pullingRef.current) return { ok: false, reason: "busy" };
+    const sp = getSupabase();
+    if (!sp) return { ok: false, reason: "no-supabase" };
+
     pullingRef.current = true;
+    setSyncBusy(true);
+    setSyncMsg("Pulling from cloud…");
+
     try {
-      const {
-        data: { session },
-      } = await sp.auth.getSession();
-      if (!session?.user) return;
+      const { data: { session } } = await sp.auth.getSession();
+      if (!session?.user) return { ok: false, reason: "no-session" };
 
       const { data, error } = await sp
         .from("tvtracker_library")
@@ -188,41 +316,103 @@ export default function TVShowTracker() {
         .eq("user_id", session.user.id)
         .single();
 
-      if (error && error.code !== "PGRST116") throw error; // PGRST116: no rows
+      if (error && error.code !== "PGRST116") throw error;
 
-      if (data?.data) {
-        setMyShows(normalizeLibrary(data.data));
-      } else {
-        await sp.from("tvtracker_library").insert({
-          user_id: session.user.id,
-          data: myShows || [],
+      const remoteWrap = unwrapRemoteData(data?.data);
+      const remoteShows = remoteWrap.shows;
+      const remoteUpdatedAt = remoteWrap.updatedAt || 0;
+      const remoteDeviceId = remoteWrap.deviceId || "";
+
+      // record that we've seen remote updatedAt
+      syncMetaRef.current = saveSyncMeta({ lastSeenRemoteUpdatedAt: remoteUpdatedAt }) || syncMetaRef.current;
+
+      const localChangedAt = syncMetaRef.current.lastLocalChangeAt || 0;
+      const lastPulled = syncMetaRef.current.lastPulledAt || 0;
+
+      // Conflict detection heuristic:
+      // - remote was updated after our last pull
+      // - AND local changed after our last pull
+      // - AND remote deviceId differs (to reduce false positives)
+      const looksLikeConflict =
+        remoteUpdatedAt > lastPulled &&
+        localChangedAt > lastPulled &&
+        remoteDeviceId &&
+        remoteDeviceId !== syncMetaRef.current.deviceId;
+
+      if (looksLikeConflict) {
+        setConflict({
+          remoteUpdatedAt,
+          remoteDeviceId,
+          localChangedAt,
+          remoteCount: remoteShows.length,
+          localCount: myShows.length,
         });
+        setSyncMsg("Conflict detected. Choose how to resolve in the menu.");
+        return { ok: false, reason: "conflict", remoteShows };
       }
+
+      // No conflict: adopt remote if allowed
+      if (allowOverwrite) {
+        setMyShows(remoteShows);
+      }
+
+      hasPulledFromCloudRef.current = true;
+      const nextMeta = saveSyncMeta({ lastPulledAt: Date.now() }) || syncMetaRef.current;
+      syncMetaRef.current = nextMeta;
+      setLastPulledAt(nextMeta.lastPulledAt);
+      setSyncMsg("Pulled from cloud.");
+      return { ok: true, remoteShows };
     } catch (e) {
-      console.warn("pullLibrary failed:", e.message);
+      console.warn("pullLibrary failed:", e?.message || e);
+      setSyncMsg("Pull failed.");
+      return { ok: false, reason: "error" };
     } finally {
       pullingRef.current = false;
+      setSyncBusy(false);
+      setTimeout(() => setSyncMsg(""), 2500);
     }
   };
 
-  // Push cloud library (on local change)
+  // Push cloud library
   const pushLibrary = async (payload) => {
-    if (pushingRef.current) return;
+    if (pushingRef.current) return { ok: false, reason: "busy" };
     const sp = getSupabase();
-    if (!sp) return;
+    if (!sp) return { ok: false, reason: "no-supabase" };
+
+    // block push until initial pull is complete
+    if (!hasPulledFromCloudRef.current) {
+      return { ok: false, reason: "not-pulled-yet" };
+    }
+
+    pushingRef.current = true;
+    setSyncBusy(true);
+    setSyncMsg("Pushing to cloud…");
+
     try {
-      const {
-        data: { session },
-      } = await sp.auth.getSession();
-      if (!session?.user) return;
-      pushingRef.current = true;
+      const { data: { session } } = await sp.auth.getSession();
+      if (!session?.user) return { ok: false, reason: "no-session" };
+
+      const envelope = makeRemoteEnvelope(payload, syncMetaRef.current);
+
       await sp
         .from("tvtracker_library")
-        .upsert({ user_id: session.user.id, data: payload }, { onConflict: "user_id" });
+        .upsert({ user_id: session.user.id, data: envelope }, { onConflict: "user_id" });
+
+      const nextMeta =
+        saveSyncMeta({ lastPushedAt: Date.now(), lastSeenRemoteUpdatedAt: envelope.updatedAt }) ||
+        syncMetaRef.current;
+      syncMetaRef.current = nextMeta;
+      setLastPushedAt(nextMeta.lastPushedAt);
+      setSyncMsg("Synced to cloud.");
+      return { ok: true };
     } catch (e) {
-      console.warn("pushLibrary failed:", e.message);
+      console.warn("pushLibrary failed:", e?.message || e);
+      setSyncMsg("Push failed.");
+      return { ok: false, reason: "error" };
     } finally {
       pushingRef.current = false;
+      setSyncBusy(false);
+      setTimeout(() => setSyncMsg(""), 2500);
     }
   };
 
@@ -232,30 +422,39 @@ export default function TVShowTracker() {
       const sp = getSupabase();
       if (!sp) return;
 
-      const {
-        data: { session },
-      } = await sp.auth.getSession();
+      const { data: { session } } = await sp.auth.getSession();
       if (session?.user) {
         setIsSignedIn(true);
         setUserEmail(session.user.email || "");
-        pullLibrary();
+        // Always pull first on sign-in; do not allow push until done
+        await pullLibrary({ allowOverwrite: true });
       }
 
-      sp.auth.onAuthStateChange((_e, ses) => {
+      sp.auth.onAuthStateChange(async (_e, ses) => {
         const signed = !!ses?.user;
         setIsSignedIn(signed);
-        setUserEmail(signed ? ses.user.email || "" : "");
-        if (signed) pullLibrary();
+        setUserEmail(signed ? (ses.user.email || "") : "");
+        if (signed) {
+          await pullLibrary({ allowOverwrite: true });
+        } else {
+          hasPulledFromCloudRef.current = false;
+          setConflict(null);
+        }
       });
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // push whenever local library changes (only if signed-in)
+  // auto-push whenever local library changes (only if signed-in AND pulled)
   useEffect(() => {
-    if (isSignedIn) pushLibrary(myShows);
+    if (!isSignedIn) return;
+    if (!hasPulledFromCloudRef.current) return;
+    // If there's an unresolved conflict, don't auto-push.
+    if (conflict) return;
+
+    pushLibrary(myShows);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSignedIn, myShows]);
+  }, [isSignedIn, myShows, conflict]);
 
   // ---------- Email magic link UI state ----------
   const [showEmailForm, setShowEmailForm] = useState(false);
@@ -327,9 +526,9 @@ export default function TVShowTracker() {
   const [expandedShow, setExpandedShow] = useState(null);
   const [expandedSeason, setExpandedSeason] = useState(null);
 
-  // Persisted sort/filter (defaults to In Progress + Title)
-  const [filterStatus, setFilterStatus] = useState(() => loadUIPrefs().filterStatus); // all | in-progress | completed
-  const [sortBy, setSortBy] = useState(() => loadUIPrefs().sortBy); // added | title | year | genre
+  // Persisted sort/filter
+  const [filterStatus, setFilterStatus] = useState(() => loadUIPrefs().filterStatus);
+  const [sortBy, setSortBy] = useState(() => loadUIPrefs().sortBy);
   useEffect(() => {
     saveUIPrefs({ filterStatus, sortBy });
   }, [filterStatus, sortBy]);
@@ -384,7 +583,7 @@ export default function TVShowTracker() {
         arr.sort((a, b) => {
           const ya = a.premiered ? parseInt(a.premiered.slice(0, 4)) : 0;
           const yb = b.premiered ? parseInt(b.premiered.slice(0, 4)) : 0;
-          return yb - ya; // newest first
+          return yb - ya;
         });
         break;
       case "genre":
@@ -402,12 +601,10 @@ export default function TVShowTracker() {
   };
 
   const setShowRating = (id, rating) => {
-    setMyShows((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, rating } : s))
-    );
+    setMyShows((prev) => prev.map((s) => (s.id === id ? { ...s, rating } : s)));
   };
 
-  // ---------- Recommendations (based on 4–5★ genres) ----------
+  // ---------- Recommendations ----------
   const [recs, setRecs] = useState(() => loadRecsCache() || []);
   const [recsLoading, setRecsLoading] = useState(false);
   const [recsMsg, setRecsMsg] = useState("");
@@ -426,7 +623,6 @@ export default function TVShowTracker() {
     return {
       lovedCount: loved.length,
       topGenres: ranked.slice(0, 6),
-      allGenres: ranked,
     };
   }, [myShows]);
 
@@ -444,9 +640,6 @@ export default function TVShowTracker() {
     setRecsLoading(true);
 
     try {
-      // Pull multiple candidate pools from TVMaze using genre keywords.
-      // This is heuristic (TVMaze doesn't provide perfect similarity endpoints),
-      // but it works well in practice with genre overlap scoring.
       const queries = topGenres.slice(0, 4);
       const pools = await Promise.all(
         queries.map(async (q) => {
@@ -461,21 +654,19 @@ export default function TVShowTracker() {
       const existingIds = new Set(myShows.map((s) => s.id));
       const topSet = new Set(topGenres.map((g) => g.toLowerCase()));
 
-      const candidates = new Map(); // id -> show data + score
+      const candidates = new Map();
 
       for (const pool of pools) {
         for (const item of pool) {
           const s = item?.show;
           if (!s?.id || !s?.name) continue;
-          if (existingIds.has(s.id)) continue; // don't recommend what you already have
+          if (existingIds.has(s.id)) continue;
 
           const genres = Array.isArray(s.genres) ? s.genres : [];
           let score = 0;
           for (const g of genres) {
             if (topSet.has(String(g).toLowerCase())) score += 3;
           }
-
-          // tiny boost if name matches one of the query genres (usually redundant but harmless)
           for (const q of queries) {
             if (s.name.toLowerCase().includes(q.toLowerCase())) score += 1;
           }
@@ -486,9 +677,8 @@ export default function TVShowTracker() {
               id: s.id,
               name: s.name,
               premiered: s.premiered || "",
-              genres: genres,
+              genres,
               image: s.image?.medium || s.image?.original || "",
-              summary: s.summary || "",
               score,
             });
           }
@@ -546,9 +736,7 @@ export default function TVShowTracker() {
 
   const fetchShowDetails = async (id) => {
     try {
-      const resp = await fetch(
-        `https://api.tvmaze.com/shows/${id}?embed=episodes`
-      );
+      const resp = await fetch(`https://api.tvmaze.com/shows/${id}?embed=episodes`);
       return await resp.json();
     } catch {
       return null;
@@ -585,8 +773,7 @@ export default function TVShowTracker() {
       seasons: episodesBySeason,
       addedDate: new Date().toISOString(),
       rewatches: [],
-      rating: 0, // 0 = unrated, 1–5 stars
-      // currentRewatch undefined means "first watch"
+      rating: 0,
     };
 
     setMyShows((prev) => [newShow, ...prev]);
@@ -618,9 +805,7 @@ export default function TVShowTracker() {
   };
 
   const updateSource = (id, value) => {
-    setMyShows((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, source: value } : s))
-    );
+    setMyShows((prev) => prev.map((s) => (s.id === id ? { ...s, source: value } : s)));
   };
 
   const toggleEpisodeWatched = (id, season, epId) => {
@@ -703,13 +888,10 @@ export default function TVShowTracker() {
       prev.map((show) => {
         if (show.id !== id) return show;
 
-        const nextNum = (show.rewatches?.length || 0) + 2; // 1st is the original
+        const nextNum = (show.rewatches?.length || 0) + 2;
         const clone = {};
         Object.keys(show.seasons).forEach((s) => {
-          clone[s] = show.seasons[s].map((e) => ({
-            ...e,
-            watched: false,
-          }));
+          clone[s] = show.seasons[s].map((e) => ({ ...e, watched: false }));
         });
 
         return {
@@ -722,9 +904,7 @@ export default function TVShowTracker() {
   };
 
   const switchToWatch = (id, watchNumber) => {
-    setMyShows((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, currentRewatch: watchNumber } : s))
-    );
+    setMyShows((prev) => prev.map((s) => (s.id === id ? { ...s, currentRewatch: watchNumber } : s)));
   };
 
   // ---------- Export / Import ----------
@@ -741,7 +921,6 @@ export default function TVShowTracker() {
 
   const exportExcel = () => {
     const wb = XLSX.utils.book_new();
-
     const header = [
       "Show Name",
       "Premiered",
@@ -826,6 +1005,63 @@ export default function TVShowTracker() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [myShows, filterStatus, sortBy]);
 
+  // ---------- Menu sync actions ----------
+  const pullFromCloudNow = async () => {
+    if (!isSignedIn) {
+      setSyncMsg("Sign in to pull from cloud.");
+      setTimeout(() => setSyncMsg(""), 2500);
+      return;
+    }
+    await pullLibrary({ allowOverwrite: true });
+  };
+
+  const syncNowPush = async () => {
+    if (!isSignedIn) {
+      setSyncMsg("Sign in to sync.");
+      setTimeout(() => setSyncMsg(""), 2500);
+      return;
+    }
+    // Ensure we have pulled at least once to avoid overwriting remote with stale local
+    if (!hasPulledFromCloudRef.current) {
+      const res = await pullLibrary({ allowOverwrite: true });
+      if (!res?.ok) return;
+    }
+    if (conflict) {
+      setSyncMsg("Resolve conflict before syncing.");
+      setTimeout(() => setSyncMsg(""), 2500);
+      return;
+    }
+    await pushLibrary(myShows);
+  };
+
+  const resolveUseCloud = async () => {
+    const res = await pullLibrary({ allowOverwrite: true });
+    if (res?.ok) setConflict(null);
+  };
+
+  const resolveUseThisDevice = async () => {
+    // Mark pulled so push is allowed, then push
+    hasPulledFromCloudRef.current = true;
+    setConflict(null);
+    await pushLibrary(myShows);
+  };
+
+  const resolveMerge = async () => {
+    const res = await pullLibrary({ allowOverwrite: false });
+    if (res?.reason === "conflict" && res.remoteShows) {
+      const merged = mergeLibraries(myShows, res.remoteShows);
+      setMyShows(merged);
+      hasPulledFromCloudRef.current = true;
+      setConflict(null);
+      await pushLibrary(merged);
+      return;
+    }
+    // If no conflict was returned (or already resolved), just do a normal push after pull
+    hasPulledFromCloudRef.current = true;
+    setConflict(null);
+    await pushLibrary(myShows);
+  };
+
   // ---------- Render ----------
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 text-white p-4">
@@ -857,7 +1093,7 @@ export default function TVShowTracker() {
               </button>
 
               {menuOpen && (
-                <div className="absolute right-0 mt-2 w-72 rounded-xl border border-slate-700 bg-slate-800 shadow-xl overflow-hidden z-50">
+                <div className="absolute right-0 mt-2 w-80 rounded-xl border border-slate-700 bg-slate-800 shadow-xl overflow-hidden z-50">
                   {/* Account */}
                   <div className="px-3 py-2 text-xs text-slate-400 border-b border-slate-700">
                     Account
@@ -907,32 +1143,97 @@ export default function TVShowTracker() {
                           >
                             {emailSending ? "Sending…" : "Send magic link"}
                           </button>
-                          {emailMsg && (
-                            <div className="text-xs text-slate-300">{emailMsg}</div>
-                          )}
+                          {emailMsg && <div className="text-xs text-slate-300">{emailMsg}</div>}
                         </div>
                       )}
                     </div>
                   )}
+
+                  {/* Sync */}
+                  <div className="px-3 py-2 text-xs text-slate-400 border-b border-slate-700">
+                    Sync
+                  </div>
+
+                  <div className="px-4 py-3 border-b border-slate-700 space-y-2">
+                    <div className="text-xs text-slate-300">
+                      Last Pull: <span className="text-slate-200">{fmtTime(lastPulledAt)}</span>
+                      <br />
+                      Last Push: <span className="text-slate-200">{fmtTime(lastPushedAt)}</span>
+                      {syncMsg ? (
+                        <>
+                          <br />
+                          <span className="text-slate-200">{syncMsg}</span>
+                        </>
+                      ) : null}
+                    </div>
+
+                    <div className="flex gap-2">
+                      <button
+                        onClick={pullFromCloudNow}
+                        disabled={syncBusy}
+                        className="flex-1 rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-50 px-3 py-2 text-sm"
+                        title="Pull your library from the cloud (cloud → this device)"
+                      >
+                        Pull from Cloud
+                      </button>
+                      <button
+                        onClick={syncNowPush}
+                        disabled={syncBusy}
+                        className="flex-1 rounded bg-green-600 hover:bg-green-700 disabled:opacity-50 px-3 py-2 text-sm font-medium"
+                        title="Sync now (this device → cloud)"
+                      >
+                        Sync Now
+                      </button>
+                    </div>
+
+                    {conflict && (
+                      <div className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3">
+                        <div className="text-sm font-semibold text-amber-200">
+                          Conflict detected
+                        </div>
+                        <div className="text-xs text-slate-200 mt-1">
+                          Cloud updated: {fmtTime(conflict.remoteUpdatedAt)} <br />
+                          This device changed: {fmtTime(conflict.localChangedAt)} <br />
+                          Cloud shows: {conflict.remoteCount} • Local shows: {conflict.localCount}
+                        </div>
+                        <div className="mt-3 flex flex-col gap-2">
+                          <button
+                            onClick={resolveUseCloud}
+                            disabled={syncBusy}
+                            className="w-full rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-50 px-3 py-2 text-sm"
+                          >
+                            Use Cloud Version (overwrite local)
+                          </button>
+                          <button
+                            onClick={resolveUseThisDevice}
+                            disabled={syncBusy}
+                            className="w-full rounded bg-purple-600 hover:bg-purple-700 disabled:opacity-50 px-3 py-2 text-sm"
+                          >
+                            Use This Device (overwrite cloud)
+                          </button>
+                          <button
+                            onClick={resolveMerge}
+                            disabled={syncBusy}
+                            className="w-full rounded bg-amber-600 hover:bg-amber-700 disabled:opacity-50 px-3 py-2 text-sm font-medium"
+                          >
+                            Merge & Sync (recommended)
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
 
                   {/* Data */}
                   <div className="px-3 py-2 text-xs text-slate-400 border-b border-slate-700">
                     Data
                   </div>
 
-                  {/* Import */}
                   <label className="flex items-center gap-2 px-4 py-3 hover:bg-slate-700 cursor-pointer">
                     <Upload className="w-4 h-4" />
                     <span>Import Data (JSON)</span>
-                    <input
-                      type="file"
-                      accept=".json"
-                      onChange={importData}
-                      className="hidden"
-                    />
+                    <input type="file" accept=".json" onChange={importData} className="hidden" />
                   </label>
 
-                  {/* Export */}
                   <button
                     onClick={exportJSON}
                     disabled={myShows.length === 0}
@@ -941,6 +1242,7 @@ export default function TVShowTracker() {
                     <Download className="w-4 h-4" />
                     <span>Export JSON</span>
                   </button>
+
                   <button
                     onClick={exportExcel}
                     disabled={myShows.length === 0}
@@ -978,10 +1280,7 @@ export default function TVShowTracker() {
           </div>
         </div>
 
-        {/* Subtitle */}
-        <p className="text-slate-300 mt-2">
-          Never lose track of what you're watching
-        </p>
+        <p className="text-slate-300 mt-2">Never lose track of what you're watching</p>
       </header>
 
       {/* RECOMMENDATIONS */}
@@ -989,8 +1288,7 @@ export default function TVShowTracker() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-xl font-semibold flex items-center gap-2">
-              <span className="text-yellow-300">★</span>
-              Recommendations
+              <span className="text-yellow-300">★</span> Recommendations
             </h2>
             <p className="text-sm text-slate-300 mt-1">
               Based on your 4–5★ shows{" "}
@@ -1005,7 +1303,6 @@ export default function TVShowTracker() {
               onClick={fetchRecommendations}
               disabled={recsLoading}
               className="px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 disabled:opacity-50 font-semibold"
-              title="Fetch new show recommendations from TVMaze"
             >
               {recsLoading ? "Generating…" : "Generate"}
             </button>
@@ -1016,7 +1313,6 @@ export default function TVShowTracker() {
                 setRecsMsg("");
               }}
               className="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600"
-              title="Clear cached recommendations"
             >
               Clear
             </button>
@@ -1034,17 +1330,10 @@ export default function TVShowTracker() {
         {recs.length > 0 && (
           <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
             {recs.map((r) => (
-              <div
-                key={r.id}
-                className="bg-slate-700 rounded-lg p-4 border border-slate-600"
-              >
+              <div key={r.id} className="bg-slate-700 rounded-lg p-4 border border-slate-600">
                 <div className="flex gap-3">
                   {r.image ? (
-                    <img
-                      src={r.image}
-                      alt={r.name}
-                      className="w-16 h-24 object-cover rounded"
-                    />
+                    <img src={r.image} alt={r.name} className="w-16 h-24 object-cover rounded" />
                   ) : (
                     <div className="w-16 h-24 rounded bg-slate-600 flex items-center justify-center text-slate-300">
                       <Tv className="w-6 h-6" />
@@ -1063,9 +1352,7 @@ export default function TVShowTracker() {
                             {
                               id: r.id,
                               name: r.name,
-                              image: r.image
-                                ? { medium: r.image, original: r.image }
-                                : undefined,
+                              image: r.image ? { medium: r.image, original: r.image } : undefined,
                             },
                             false
                           )
@@ -1117,9 +1404,7 @@ export default function TVShowTracker() {
           </div>
         )}
 
-        {isSearching && (
-          <div className="mt-4 text-center text-slate-400">Searching…</div>
-        )}
+        {isSearching && <div className="mt-4 text-center text-slate-400">Searching…</div>}
 
         {!!searchResults.length && (
           <div className="mt-4 space-y-2 max-h-96 overflow-y-auto">
@@ -1147,19 +1432,13 @@ export default function TVShowTracker() {
                     />
                   )}
                   {s.image?.medium && (
-                    <img
-                      src={s.image.medium}
-                      alt={s.name}
-                      className="w-16 h-24 object-cover rounded"
-                    />
+                    <img src={s.image.medium} alt={s.name} className="w-16 h-24 object-cover rounded" />
                   )}
                   <div className="flex-1">
                     <div className="flex items-center gap-2">
                       <h3 className="font-semibold">{s.name}</h3>
                       {already && (
-                        <span className="text-xs bg-green-600 px-2 py-1 rounded-full">
-                          ✓ Already Added
-                        </span>
+                        <span className="text-xs bg-green-600 px-2 py-1 rounded-full">✓ Already Added</span>
                       )}
                     </div>
                     <p className="text-sm text-slate-400">
@@ -1184,9 +1463,7 @@ export default function TVShowTracker() {
       {/* SORT / FILTER */}
       {myShows.length > 0 && (
         <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-          <h2 className="text-2xl font-semibold">
-            My Shows ({getSortedShows(myShows).length})
-          </h2>
+          <h2 className="text-2xl font-semibold">My Shows ({getSortedShows(myShows).length})</h2>
           <div className="flex gap-3">
             <select
               value={sortBy}
@@ -1216,9 +1493,7 @@ export default function TVShowTracker() {
         <div className="text-center py-12 bg-slate-800 rounded-lg">
           <Tv className="w-16 h-16 mx-auto mb-4 text-slate-600" />
           <p className="text-slate-400">
-            {myShows.length
-              ? "No shows match the current filters."
-              : "No shows yet. Add your first above!"}
+            {myShows.length ? "No shows match the current filters." : "No shows yet. Add your first above!"}
           </p>
         </div>
       ) : (
@@ -1238,14 +1513,9 @@ export default function TVShowTracker() {
                 }`}
               >
                 <div className="p-4">
-                  {/* Top row */}
                   <div className="flex items-start gap-4">
                     {show.image && (
-                      <img
-                        src={show.image}
-                        alt={show.name}
-                        className="w-20 h-28 object-cover rounded"
-                      />
+                      <img src={show.image} alt={show.name} className="w-20 h-28 object-cover rounded" />
                     )}
                     <div className="flex-1">
                       <div className="flex items-start justify-between mb-2">
@@ -1261,17 +1531,14 @@ export default function TVShowTracker() {
                             {hasRewatches && (
                               <span className="flex items-center gap-1 px-2 py-1 bg-blue-600 rounded-full text-xs font-bold">
                                 <RotateCcw className="w-3 h-3" />
-                                {show.rewatches.length} rewatch
-                                {show.rewatches.length > 1 ? "es" : ""}
+                                {show.rewatches.length} rewatch{show.rewatches.length > 1 ? "es" : ""}
                               </span>
                             )}
                           </div>
                           <p className="text-sm text-slate-400">
-                            {(show.genres || []).join(", ")} •{" "}
-                            {show.premiered?.slice(0, 4) || ""}
+                            {(show.genres || []).join(", ")} • {show.premiered?.slice(0, 4) || ""}
                           </p>
 
-                          {/* Rating */}
                           <div className="mt-2">
                             <Stars
                               value={show.rating || 0}
@@ -1290,15 +1557,12 @@ export default function TVShowTracker() {
                         </button>
                       </div>
 
-                      {/* Rewatch selector */}
                       {hasRewatches && (
                         <div className="mb-3 flex items-center gap-2">
                           <span className="text-sm text-slate-400">Viewing:</span>
                           <select
                             value={show.currentRewatch || 1}
-                            onChange={(e) =>
-                              switchToWatch(show.id, parseInt(e.target.value))
-                            }
+                            onChange={(e) => switchToWatch(show.id, parseInt(e.target.value))}
                             className="px-3 py-1 bg-slate-700 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                           >
                             <option value={1}>First Watch</option>
@@ -1311,14 +1575,11 @@ export default function TVShowTracker() {
                         </div>
                       )}
 
-                      {/* Progress bar */}
                       <div className="mb-3">
                         <div className="flex justify-between text-sm text-slate-400 mb-1">
                           <span>
                             Progress{" "}
-                            {show.currentRewatch > 1
-                              ? `(Watch #${show.currentRewatch})`
-                              : ""}
+                            {show.currentRewatch > 1 ? `(Watch #${show.currentRewatch})` : ""}
                           </span>
                           <span>
                             {progress.watched} / {progress.total} episodes ({pct}%)
@@ -1334,11 +1595,8 @@ export default function TVShowTracker() {
                         </div>
                       </div>
 
-                      {/* Where watching */}
                       <div className="mb-3">
-                        <label className="text-sm text-slate-400 mb-1 block">
-                          Watching on:
-                        </label>
+                        <label className="text-sm text-slate-400 mb-1 block">Watching on:</label>
                         <input
                           value={show.source}
                           onChange={(e) => updateSource(show.id, e.target.value)}
@@ -1347,17 +1605,12 @@ export default function TVShowTracker() {
                         />
                       </div>
 
-                      {/* Expand toggle + rewatch button */}
                       <div className="flex gap-2 flex-wrap">
                         <button
                           onClick={() => setExpandedShow(isExpanded ? null : show.id)}
                           className="flex items-center gap-2 text-purple-400 hover:text-purple-300"
                         >
-                          {isExpanded ? (
-                            <ChevronDown className="w-4 h-4" />
-                          ) : (
-                            <ChevronRight className="w-4 h-4" />
-                          )}
+                          {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                           {isExpanded ? "Hide" : "Show"} Seasons & Episodes
                         </button>
 
@@ -1374,7 +1627,6 @@ export default function TVShowTracker() {
                     </div>
                   </div>
 
-                  {/* Season list */}
                   {isExpanded && (
                     <div className="mt-4 space-y-3">
                       {Object.keys(seasons)
@@ -1393,11 +1645,7 @@ export default function TVShowTracker() {
                                   onClick={() => setExpandedSeason(isOpen ? null : sid)}
                                   className="flex items-center gap-2"
                                 >
-                                  {isOpen ? (
-                                    <ChevronDown className="w-4 h-4" />
-                                  ) : (
-                                    <ChevronRight className="w-4 h-4" />
-                                  )}
+                                  {isOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                                   <span className="font-semibold">Season {sNum}</span>
                                   <span className="text-sm text-slate-300">
                                     ({sp.watched}/{sp.total})
@@ -1414,7 +1662,6 @@ export default function TVShowTracker() {
                                   <button
                                     onClick={() => markSeasonComplete(show.id, sNum, true)}
                                     className="flex items-center gap-1 px-3 py-1 bg-green-600 hover:bg-green-700 rounded text-xs"
-                                    title="Mark all episodes as watched"
                                   >
                                     <CheckCircle className="w-3 h-3" />
                                     Mark Complete
@@ -1423,7 +1670,6 @@ export default function TVShowTracker() {
                                   <button
                                     onClick={() => markSeasonComplete(show.id, sNum, false)}
                                     className="flex items-center gap-1 px-3 py-1 bg-slate-600 hover:bg-slate-500 rounded text-xs"
-                                    title="Mark all episodes as unwatched"
                                   >
                                     Unmark All
                                   </button>
@@ -1438,13 +1684,9 @@ export default function TVShowTracker() {
                                       className="flex items-center gap-3 p-2 bg-slate-600 rounded hover:bg-slate-500 transition-colors"
                                     >
                                       <button
-                                        onClick={() =>
-                                          toggleEpisodeWatched(show.id, sNum, ep.id)
-                                        }
+                                        onClick={() => toggleEpisodeWatched(show.id, sNum, ep.id)}
                                         className={`w-6 h-6 rounded border-2 flex items-center justify-center transition-colors ${
-                                          ep.watched
-                                            ? "bg-purple-600 border-purple-600"
-                                            : "border-slate-400"
+                                          ep.watched ? "bg-purple-600 border-purple-600" : "border-slate-400"
                                         }`}
                                       >
                                         {ep.watched && <Check className="w-4 h-4" />}
@@ -1456,9 +1698,7 @@ export default function TVShowTracker() {
                                           </span>
                                         </div>
                                         {ep.airdate && (
-                                          <span className="text-xs text-slate-300">
-                                            {ep.airdate}
-                                          </span>
+                                          <span className="text-xs text-slate-300">{ep.airdate}</span>
                                         )}
                                       </div>
                                     </div>
@@ -1477,7 +1717,6 @@ export default function TVShowTracker() {
         </div>
       )}
 
-      {/* FOOTER */}
       <div className="mt-8 text-center text-sm text-slate-300 bg-slate-800 rounded-lg p-4">
         <p className="mb-1">
           <strong>Your data saves automatically.</strong>
