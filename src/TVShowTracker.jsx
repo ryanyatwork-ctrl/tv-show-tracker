@@ -37,6 +37,23 @@ import { getSupabase } from "./lib/supabase";
  * - Conflict detection + resolution (Cloud wins / This device wins / Merge)
  */
 
+// ---------- Monetization (stub until Play Billing is added) ----------
+const PAID_KEY = "tvtracker.isPaid.v1";
+function loadIsPaid() {
+  try {
+    return localStorage.getItem(PAID_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+function persistIsPaid(v) {
+  try {
+    localStorage.setItem(PAID_KEY, v ? "true" : "false");
+  } catch {
+    /* ignore */
+  }
+}
+
 // ---------- UI preferences persistence (sort/filter) ----------
 const UI_PREFS_KEY = "tvtracker.uiPrefs.v1";
 function loadUIPrefs() {
@@ -62,7 +79,8 @@ function saveUIPrefs(next) {
 // ---------- Recommendations cache ----------
 const RECS_CACHE_KEY = "tvtracker.recs.v1";
 const RECS_CACHE_TTL_MS = 1000 * 60 * 60 * 12; // 12 hours
-function loadRecsCache() {
+function loadRecsCache(isPaid) {
+  if (!isPaid) return null;
   try {
     const raw = localStorage.getItem(RECS_CACHE_KEY);
     const parsed = raw ? JSON.parse(raw) : null;
@@ -73,9 +91,20 @@ function loadRecsCache() {
     return null;
   }
 }
-function saveRecsCache(items) {
+function saveRecsCache(isPaid, items) {
+  if (!isPaid) return;
   try {
-    localStorage.setItem(RECS_CACHE_KEY, JSON.stringify({ ts: Date.now(), items }));
+    localStorage.setItem(
+      RECS_CACHE_KEY,
+      JSON.stringify({ ts: Date.now(), items })
+    );
+  } catch {
+    /* ignore */
+  }
+}
+function clearRecsCache() {
+  try {
+    localStorage.removeItem(RECS_CACHE_KEY);
   } catch {
     /* ignore */
   }
@@ -199,7 +228,9 @@ function Stars({ value, onChange, onClear, size = "text-lg" }) {
           </button>
         );
       })}
-      <span className="ml-2 text-xs text-slate-400">{value ? `${value}/5` : "Unrated"}</span>
+      <span className="ml-2 text-xs text-slate-400">
+        {value ? `${value}/5` : "Unrated"}
+      </span>
       {value ? (
         <button
           type="button"
@@ -248,6 +279,13 @@ function mergeLibraries(localShows, remoteShows) {
 export default function TVShowTracker() {
   const syncMetaRef = useRef(loadSyncMeta());
 
+  // Paid state (stub)
+  const [isPaid, setIsPaid] = useState(() => loadIsPaid());
+  const setPaid = (v) => {
+    setIsPaid(v);
+    persistIsPaid(v);
+  };
+
   // IMPORTANT: prevent pushing stale local data before first pull completes
   const hasPulledFromCloudRef = useRef(false);
 
@@ -263,7 +301,8 @@ export default function TVShowTracker() {
 
   useEffect(() => {
     // Track local changes for conflict detection
-    syncMetaRef.current = saveSyncMeta({ lastLocalChangeAt: Date.now() }) || syncMetaRef.current;
+    syncMetaRef.current =
+      saveSyncMeta({ lastLocalChangeAt: Date.now() }) || syncMetaRef.current;
 
     try {
       localStorage.setItem("tvShowTrackerData", JSON.stringify(myShows));
@@ -324,7 +363,9 @@ export default function TVShowTracker() {
       const remoteDeviceId = remoteWrap.deviceId || "";
 
       // record that we've seen remote updatedAt
-      syncMetaRef.current = saveSyncMeta({ lastSeenRemoteUpdatedAt: remoteUpdatedAt }) || syncMetaRef.current;
+      syncMetaRef.current =
+        saveSyncMeta({ lastSeenRemoteUpdatedAt: remoteUpdatedAt }) ||
+        syncMetaRef.current;
 
       const localChangedAt = syncMetaRef.current.lastLocalChangeAt || 0;
       const lastPulled = syncMetaRef.current.lastPulledAt || 0;
@@ -357,7 +398,8 @@ export default function TVShowTracker() {
       }
 
       hasPulledFromCloudRef.current = true;
-      const nextMeta = saveSyncMeta({ lastPulledAt: Date.now() }) || syncMetaRef.current;
+      const nextMeta =
+        saveSyncMeta({ lastPulledAt: Date.now() }) || syncMetaRef.current;
       syncMetaRef.current = nextMeta;
       setLastPulledAt(nextMeta.lastPulledAt);
       setSyncMsg("Pulled from cloud.");
@@ -399,8 +441,10 @@ export default function TVShowTracker() {
         .upsert({ user_id: session.user.id, data: envelope }, { onConflict: "user_id" });
 
       const nextMeta =
-        saveSyncMeta({ lastPushedAt: Date.now(), lastSeenRemoteUpdatedAt: envelope.updatedAt }) ||
-        syncMetaRef.current;
+        saveSyncMeta({
+          lastPushedAt: Date.now(),
+          lastSeenRemoteUpdatedAt: envelope.updatedAt,
+        }) || syncMetaRef.current;
       syncMetaRef.current = nextMeta;
       setLastPushedAt(nextMeta.lastPushedAt);
       setSyncMsg("Synced to cloud.");
@@ -507,18 +551,15 @@ export default function TVShowTracker() {
     }
   };
 
-const signOut = async () => {
-  try {
-    const sp = getSupabase();
-    console.log("Signing out, supabase:", sp);
-    if (!sp) return;
-    const { error } = await sp.auth.signOut();
-    console.log("Sign out result:", error || "OK");
-  } catch (e) {
-    console.error("Sign out failed:", e);
-  }
-};
-
+  const signOut = async () => {
+    try {
+      const sp = getSupabase();
+      if (!sp) return;
+      await sp.auth.signOut();
+    } catch (e) {
+      console.error("Sign out failed:", e);
+    }
+  };
 
   // ---------- UI state ----------
   const [searchQuery, setSearchQuery] = useState("");
@@ -604,13 +645,27 @@ const signOut = async () => {
   };
 
   const setShowRating = (id, rating) => {
+    // Gate ratings (paid)
+    if (!isPaid) return;
     setMyShows((prev) => prev.map((s) => (s.id === id ? { ...s, rating } : s)));
   };
 
-  // ---------- Recommendations ----------
-  const [recs, setRecs] = useState(() => loadRecsCache() || []);
+  // ---------- Recommendations (paid) ----------
+  const [recs, setRecs] = useState(() => loadRecsCache(isPaid) || []);
   const [recsLoading, setRecsLoading] = useState(false);
   const [recsMsg, setRecsMsg] = useState("");
+
+  // Keep recs cleared if user is not paid (or toggles off in future)
+  useEffect(() => {
+    if (!isPaid) {
+      setRecs([]);
+      setRecsMsg("");
+    } else {
+      // refresh from cache if available
+      setRecs(loadRecsCache(true) || []);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPaid]);
 
   const lovedGenreProfile = useMemo(() => {
     const loved = myShows.filter((s) => (s.rating || 0) >= 4);
@@ -630,12 +685,19 @@ const signOut = async () => {
   }, [myShows]);
 
   const fetchRecommendations = async () => {
+    if (!isPaid) return;
+
+    if (!navigator.onLine) {
+      setRecsMsg("You're offline. Connect to the internet to generate recommendations.");
+      return;
+    }
+
     const { lovedCount, topGenres } = lovedGenreProfile;
 
     if (lovedCount < 1 || topGenres.length === 0) {
       setRecsMsg("Rate at least one show 4★ or 5★ to generate recommendations.");
       setRecs([]);
-      saveRecsCache([]);
+      saveRecsCache(isPaid, []);
       return;
     }
 
@@ -693,7 +755,7 @@ const signOut = async () => {
         .slice(0, 18);
 
       setRecs(sorted);
-      saveRecsCache(sorted);
+      saveRecsCache(isPaid, sorted);
       setRecsMsg(sorted.length ? "" : "No recommendations found. Try rating more shows 4★–5★.");
     } catch (e) {
       console.warn("fetchRecommendations failed:", e?.message || e);
@@ -709,6 +771,13 @@ const signOut = async () => {
       setSearchResults([]);
       return;
     }
+
+    if (!navigator.onLine) {
+      // Offline: intentionally no search
+      setSearchResults([]);
+      return;
+    }
+
     setIsSearching(true);
     try {
       const res = await fetch(
@@ -738,6 +807,7 @@ const signOut = async () => {
   };
 
   const fetchShowDetails = async (id) => {
+    if (!navigator.onLine) return null;
     try {
       const resp = await fetch(`https://api.tvmaze.com/shows/${id}?embed=episodes`);
       return await resp.json();
@@ -747,6 +817,7 @@ const signOut = async () => {
   };
 
   const addShow = async (show, clearAfter = true) => {
+    if (!navigator.onLine) return;
     if (isShowAdded(show.id)) return;
 
     const details = await fetchShowDetails(show.id);
@@ -789,6 +860,8 @@ const signOut = async () => {
   };
 
   const addSelectedShows = async () => {
+    if (!navigator.onLine) return;
+
     const toAdd = searchResults
       .map((r) => r.show)
       .filter((s) => selectedShows.has(s.id) && !isShowAdded(s.id));
@@ -907,7 +980,9 @@ const signOut = async () => {
   };
 
   const switchToWatch = (id, watchNumber) => {
-    setMyShows((prev) => prev.map((s) => (s.id === id ? { ...s, currentRewatch: watchNumber } : s)));
+    setMyShows((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, currentRewatch: watchNumber } : s))
+    );
   };
 
   // ---------- Export / Import ----------
@@ -1146,7 +1221,9 @@ const signOut = async () => {
                           >
                             {emailSending ? "Sending…" : "Send magic link"}
                           </button>
-                          {emailMsg && <div className="text-xs text-slate-300">{emailMsg}</div>}
+                          {emailMsg && (
+                            <div className="text-xs text-slate-300">{emailMsg}</div>
+                          )}
                         </div>
                       )}
                     </div>
@@ -1159,9 +1236,11 @@ const signOut = async () => {
 
                   <div className="px-4 py-3 border-b border-slate-700 space-y-2">
                     <div className="text-xs text-slate-300">
-                      Last Pull: <span className="text-slate-200">{fmtTime(lastPulledAt)}</span>
+                      Last Pull:{" "}
+                      <span className="text-slate-200">{fmtTime(lastPulledAt)}</span>
                       <br />
-                      Last Push: <span className="text-slate-200">{fmtTime(lastPushedAt)}</span>
+                      Last Push:{" "}
+                      <span className="text-slate-200">{fmtTime(lastPushedAt)}</span>
                       {syncMsg ? (
                         <>
                           <br />
@@ -1234,7 +1313,12 @@ const signOut = async () => {
                   <label className="flex items-center gap-2 px-4 py-3 hover:bg-slate-700 cursor-pointer">
                     <Upload className="w-4 h-4" />
                     <span>Import Data (JSON)</span>
-                    <input type="file" accept=".json" onChange={importData} className="hidden" />
+                    <input
+                      type="file"
+                      accept=".json"
+                      onChange={importData}
+                      className="hidden"
+                    />
                   </label>
 
                   <button
@@ -1277,6 +1361,20 @@ const signOut = async () => {
                     <DollarSign className="w-4 h-4" />
                     Donate via Venmo
                   </a>
+
+                  {/* Dev-only: quick toggle paid state (remove before stores) */}
+                  <div className="px-3 py-2 text-xs text-slate-400 border-t border-slate-700">
+                    Developer
+                  </div>
+                  <div className="px-4 py-3">
+                    <button
+                      onClick={() => setPaid(!isPaid)}
+                      className="w-full rounded bg-slate-700 hover:bg-slate-600 px-3 py-2 text-sm"
+                      title="Temporary toggle for testing paid gating. Remove before app stores."
+                    >
+                      {isPaid ? "Set to FREE (test)" : "Set to PAID (test)"}
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -1286,96 +1384,107 @@ const signOut = async () => {
         <p className="text-slate-300 mt-2">Never lose track of what you're watching</p>
       </header>
 
-      {/* RECOMMENDATIONS */}
-      <div className="mb-8 bg-slate-800 rounded-lg p-6 shadow-xl">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="text-xl font-semibold flex items-center gap-2">
-              <span className="text-yellow-300">★</span> Recommendations
-            </h2>
-            <p className="text-sm text-slate-300 mt-1">
-              Based on your 4–5★ shows{" "}
-              {lovedGenreProfile.topGenres.length
-                ? `(top genres: ${lovedGenreProfile.topGenres.join(", ")})`
-                : ""}
-            </p>
+      {/* RECOMMENDATIONS (PAID) */}
+      {isPaid ? (
+        <div className="mb-8 bg-slate-800 rounded-lg p-6 shadow-xl">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-xl font-semibold flex items-center gap-2">
+                <span className="text-yellow-300">★</span> Recommendations
+              </h2>
+              <p className="text-sm text-slate-300 mt-1">
+                Based on your 4–5★ shows{" "}
+                {lovedGenreProfile.topGenres.length
+                  ? `(top genres: ${lovedGenreProfile.topGenres.join(", ")})`
+                  : ""}
+              </p>
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                onClick={fetchRecommendations}
+                disabled={recsLoading}
+                className="px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 disabled:opacity-50 font-semibold"
+              >
+                {recsLoading ? "Generating…" : "Generate"}
+              </button>
+              <button
+                onClick={() => {
+                  setRecs([]);
+                  saveRecsCache(true, []);
+                  setRecsMsg("");
+                }}
+                className="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600"
+              >
+                Clear
+              </button>
+            </div>
           </div>
 
-          <div className="flex gap-2">
-            <button
-              onClick={fetchRecommendations}
-              disabled={recsLoading}
-              className="px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 disabled:opacity-50 font-semibold"
-            >
-              {recsLoading ? "Generating…" : "Generate"}
-            </button>
-            <button
-              onClick={() => {
-                setRecs([]);
-                saveRecsCache([]);
-                setRecsMsg("");
-              }}
-              className="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600"
-            >
-              Clear
-            </button>
-          </div>
-        </div>
+          {recsMsg && <div className="mt-3 text-sm text-slate-300">{recsMsg}</div>}
 
-        {recsMsg && <div className="mt-3 text-sm text-slate-300">{recsMsg}</div>}
+          {!recsMsg && lovedGenreProfile.lovedCount === 0 && (
+            <div className="mt-3 text-sm text-slate-300">
+              Rate a show 4★ or 5★ and hit <strong>Generate</strong>.
+            </div>
+          )}
 
-        {!recsMsg && lovedGenreProfile.lovedCount === 0 && (
-          <div className="mt-3 text-sm text-slate-300">
-            Rate a show 4★ or 5★ and hit <strong>Generate</strong>.
-          </div>
-        )}
-
-        {recs.length > 0 && (
-          <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
-            {recs.map((r) => (
-              <div key={r.id} className="bg-slate-700 rounded-lg p-4 border border-slate-600">
-                <div className="flex gap-3">
-                  {r.image ? (
-                    <img src={r.image} alt={r.name} className="w-16 h-24 object-cover rounded" />
-                  ) : (
-                    <div className="w-16 h-24 rounded bg-slate-600 flex items-center justify-center text-slate-300">
-                      <Tv className="w-6 h-6" />
-                    </div>
-                  )}
-                  <div className="flex-1">
-                    <div className="font-semibold">{r.name}</div>
-                    <div className="text-xs text-slate-300 mt-1">
-                      {r.premiered ? r.premiered.slice(0, 4) : ""}{" "}
-                      {r.genres?.length ? `• ${r.genres.join(", ")}` : ""}
-                    </div>
-                    <div className="mt-3 flex gap-2 items-center">
-                      <button
-                        onClick={() =>
-                          addShow(
-                            {
-                              id: r.id,
-                              name: r.name,
-                              image: r.image ? { medium: r.image, original: r.image } : undefined,
-                            },
-                            false
-                          )
-                        }
-                        disabled={isShowAdded(r.id)}
-                        className="px-3 py-2 rounded bg-green-600 hover:bg-green-700 disabled:opacity-50 text-sm font-semibold"
-                      >
-                        {isShowAdded(r.id) ? "Added" : "Add"}
-                      </button>
-                      <span className="text-xs text-slate-400" title="Relevance score">
-                        score {r.score}
-                      </span>
+          {recs.length > 0 && (
+            <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+              {recs.map((r) => (
+                <div key={r.id} className="bg-slate-700 rounded-lg p-4 border border-slate-600">
+                  <div className="flex gap-3">
+                    {r.image ? (
+                      <img src={r.image} alt={r.name} className="w-16 h-24 object-cover rounded" />
+                    ) : (
+                      <div className="w-16 h-24 rounded bg-slate-600 flex items-center justify-center text-slate-300">
+                        <Tv className="w-6 h-6" />
+                      </div>
+                    )}
+                    <div className="flex-1">
+                      <div className="font-semibold">{r.name}</div>
+                      <div className="text-xs text-slate-300 mt-1">
+                        {r.premiered ? r.premiered.slice(0, 4) : ""}{" "}
+                        {r.genres?.length ? `• ${r.genres.join(", ")}` : ""}
+                      </div>
+                      <div className="mt-3 flex gap-2 items-center">
+                        <button
+                          onClick={() =>
+                            addShow(
+                              {
+                                id: r.id,
+                                name: r.name,
+                                image: r.image ? { medium: r.image, original: r.image } : undefined,
+                              },
+                              false
+                            )
+                          }
+                          disabled={isShowAdded(r.id)}
+                          className="px-3 py-2 rounded bg-green-600 hover:bg-green-700 disabled:opacity-50 text-sm font-semibold"
+                        >
+                          {isShowAdded(r.id) ? "Added" : "Add"}
+                        </button>
+                        <span className="text-xs text-slate-400" title="Relevance score">
+                          score {r.score}
+                        </span>
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="mb-8 bg-slate-800 rounded-lg p-6 shadow-xl border border-slate-700">
+          <h2 className="text-xl font-semibold flex items-center gap-2">
+            <span className="text-yellow-300">★</span> Recommendations (Paid)
+          </h2>
+          <p className="text-sm text-slate-300 mt-2">
+            Unlock Recommendations with the $1.99 one-time purchase.
+          </p>
+        </div>
+      )}
 
       {/* SEARCH / ADD */}
       <div className="mb-8 bg-slate-800 rounded-lg p-6 shadow-xl">
@@ -1383,6 +1492,12 @@ const signOut = async () => {
           <Plus className="w-5 h-5 text-purple-400" />
           Add New Series
         </h2>
+
+        {!navigator.onLine && (
+          <div className="mb-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-slate-200">
+            You’re offline. Connect to the internet to search and add new shows.
+          </div>
+        )}
 
         <div className="relative mb-4">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-5 h-5" />
@@ -1401,6 +1516,7 @@ const signOut = async () => {
             <button
               onClick={addSelectedShows}
               className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg font-semibold"
+              disabled={!navigator.onLine}
             >
               Add Selected Shows
             </button>
@@ -1432,16 +1548,23 @@ const signOut = async () => {
                       checked={isChecked}
                       onChange={() => toggleShowSelection(s.id)}
                       className="w-5 h-5 rounded"
+                      disabled={!navigator.onLine}
                     />
                   )}
                   {s.image?.medium && (
-                    <img src={s.image.medium} alt={s.name} className="w-16 h-24 object-cover rounded" />
+                    <img
+                      src={s.image.medium}
+                      alt={s.name}
+                      className="w-16 h-24 object-cover rounded"
+                    />
                   )}
                   <div className="flex-1">
                     <div className="flex items-center gap-2">
                       <h3 className="font-semibold">{s.name}</h3>
                       {already && (
-                        <span className="text-xs bg-green-600 px-2 py-1 rounded-full">✓ Already Added</span>
+                        <span className="text-xs bg-green-600 px-2 py-1 rounded-full">
+                          ✓ Already Added
+                        </span>
                       )}
                     </div>
                     <p className="text-sm text-slate-400">
@@ -1452,6 +1575,7 @@ const signOut = async () => {
                     <button
                       onClick={() => addShow(s)}
                       className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg"
+                      disabled={!navigator.onLine}
                     >
                       Add
                     </button>
@@ -1548,6 +1672,11 @@ const signOut = async () => {
                               onChange={(n) => setShowRating(show.id, n)}
                               onClear={() => setShowRating(show.id, 0)}
                             />
+                            {!isPaid && (
+                              <div className="text-xs text-slate-400 mt-1">
+                                Ratings are a paid feature.
+                              </div>
+                            )}
                           </div>
                         </div>
 
