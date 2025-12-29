@@ -102,19 +102,17 @@ function saveRecsCache(isPaid, items) {
     /* ignore */
   }
 }
-function clearRecsCache() {
-  try {
-    localStorage.removeItem(RECS_CACHE_KEY);
-  } catch {
-    /* ignore */
-  }
-}
 
 // ---------- Sync meta ----------
 const SYNC_META_KEY = "tvtracker.syncMeta.v1";
 function randomId() {
   // simple device id; good enough for client-side conflict detection
-  return "dev_" + Math.random().toString(16).slice(2) + "_" + Date.now().toString(16);
+  return (
+    "dev_" +
+    Math.random().toString(16).slice(2) +
+    "_" +
+    Date.now().toString(16)
+  );
 }
 function loadSyncMeta() {
   try {
@@ -183,7 +181,11 @@ function unwrapRemoteData(remoteData) {
   if (Array.isArray(remoteData)) {
     return { shows: normalizeLibrary(remoteData), updatedAt: 0, deviceId: "" };
   }
-  if (remoteData && typeof remoteData === "object" && Array.isArray(remoteData.shows)) {
+  if (
+    remoteData &&
+    typeof remoteData === "object" &&
+    Array.isArray(remoteData.shows)
+  ) {
     return {
       shows: normalizeLibrary(remoteData.shows),
       updatedAt: typeof remoteData.updatedAt === "number" ? remoteData.updatedAt : 0,
@@ -217,11 +219,7 @@ function Stars({ value, onChange, onClear, size = "text-lg" }) {
             } hover:text-yellow-300 transition-colors`}
             aria-label={`${n} star${n === 1 ? "" : "s"}`}
             title={
-              n === 1
-                ? "Didn't like it"
-                : n === 5
-                ? "Loved it"
-                : `${n} stars`
+              n === 1 ? "Didn't like it" : n === 5 ? "Loved it" : `${n} stars`
             }
           >
             ★
@@ -277,14 +275,13 @@ function mergeLibraries(localShows, remoteShows) {
 }
 
 export default function TVShowTracker() {
-  const syncMetaRef = useRef(loadSyncMeta());
+  // Paid state (local stub)
+  const [isPaid, setIsPaid] = useState(loadIsPaid());
+  useEffect(() => {
+    persistIsPaid(isPaid);
+  }, [isPaid]);
 
-  // Paid state (stub)
-  const [isPaid, setIsPaid] = useState(() => loadIsPaid());
-  const setPaid = (v) => {
-    setIsPaid(v);
-    persistIsPaid(v);
-  };
+  const syncMetaRef = useRef(loadSyncMeta());
 
   // IMPORTANT: prevent pushing stale local data before first pull completes
   const hasPulledFromCloudRef = useRef(false);
@@ -318,8 +315,12 @@ export default function TVShowTracker() {
   // sync status UI
   const [syncMsg, setSyncMsg] = useState("");
   const [syncBusy, setSyncBusy] = useState(false);
-  const [lastPulledAt, setLastPulledAt] = useState(syncMetaRef.current.lastPulledAt || 0);
-  const [lastPushedAt, setLastPushedAt] = useState(syncMetaRef.current.lastPushedAt || 0);
+  const [lastPulledAt, setLastPulledAt] = useState(
+    syncMetaRef.current.lastPulledAt || 0
+  );
+  const [lastPushedAt, setLastPushedAt] = useState(
+    syncMetaRef.current.lastPushedAt || 0
+  );
 
   // conflict UI
   const [conflict, setConflict] = useState(null); // { remoteUpdatedAt, remoteDeviceId, localChangedAt, remoteCount, localCount }
@@ -331,7 +332,9 @@ export default function TVShowTracker() {
   const getSessionUserId = async () => {
     const sp = getSupabase();
     if (!sp) return null;
-    const { data: { session } } = await sp.auth.getSession();
+    const {
+      data: { session },
+    } = await sp.auth.getSession();
     return session?.user?.id || null;
   };
 
@@ -346,7 +349,9 @@ export default function TVShowTracker() {
     setSyncMsg("Pulling from cloud…");
 
     try {
-      const { data: { session } } = await sp.auth.getSession();
+      const {
+        data: { session },
+      } = await sp.auth.getSession();
       if (!session?.user) return { ok: false, reason: "no-session" };
 
       const { data, error } = await sp
@@ -374,7 +379,9 @@ export default function TVShowTracker() {
       // - remote was updated after our last pull
       // - AND local changed after our last pull
       // - AND remote deviceId differs (to reduce false positives)
+      // + guard remoteUpdatedAt > 0 to avoid legacy/empty remote payload weirdness
       const looksLikeConflict =
+        remoteUpdatedAt > 0 &&
         remoteUpdatedAt > lastPulled &&
         localChangedAt > lastPulled &&
         remoteDeviceId &&
@@ -398,8 +405,7 @@ export default function TVShowTracker() {
       }
 
       hasPulledFromCloudRef.current = true;
-      const nextMeta =
-        saveSyncMeta({ lastPulledAt: Date.now() }) || syncMetaRef.current;
+      const nextMeta = saveSyncMeta({ lastPulledAt: Date.now() }) || syncMetaRef.current;
       syncMetaRef.current = nextMeta;
       setLastPulledAt(nextMeta.lastPulledAt);
       setSyncMsg("Pulled from cloud.");
@@ -431,7 +437,9 @@ export default function TVShowTracker() {
     setSyncMsg("Pushing to cloud…");
 
     try {
-      const { data: { session } } = await sp.auth.getSession();
+      const {
+        data: { session },
+      } = await sp.auth.getSession();
       if (!session?.user) return { ok: false, reason: "no-session" };
 
       const envelope = makeRemoteEnvelope(payload, syncMetaRef.current);
@@ -466,7 +474,9 @@ export default function TVShowTracker() {
       const sp = getSupabase();
       if (!sp) return;
 
-      const { data: { session } } = await sp.auth.getSession();
+      const {
+        data: { session },
+      } = await sp.auth.getSession();
       if (session?.user) {
         setIsSignedIn(true);
         setUserEmail(session.user.email || "");
@@ -555,7 +565,8 @@ export default function TVShowTracker() {
     try {
       const sp = getSupabase();
       if (!sp) return;
-      await sp.auth.signOut();
+      const { error } = await sp.auth.signOut();
+      if (error) console.warn("Sign out error:", error);
     } catch (e) {
       console.error("Sign out failed:", e);
     }
@@ -645,24 +656,22 @@ export default function TVShowTracker() {
   };
 
   const setShowRating = (id, rating) => {
-    // Gate ratings (paid)
-    if (!isPaid) return;
     setMyShows((prev) => prev.map((s) => (s.id === id ? { ...s, rating } : s)));
   };
 
-  // ---------- Recommendations (paid) ----------
+  // ---------- Recommendations ----------
   const [recs, setRecs] = useState(() => loadRecsCache(isPaid) || []);
   const [recsLoading, setRecsLoading] = useState(false);
   const [recsMsg, setRecsMsg] = useState("");
 
-  // Keep recs cleared if user is not paid (or toggles off in future)
+  // If user buys later, allow loading cache immediately
   useEffect(() => {
-    if (!isPaid) {
+    if (isPaid) {
+      const cached = loadRecsCache(true);
+      if (cached) setRecs(cached);
+    } else {
       setRecs([]);
       setRecsMsg("");
-    } else {
-      // refresh from cache if available
-      setRecs(loadRecsCache(true) || []);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isPaid]);
@@ -686,11 +695,6 @@ export default function TVShowTracker() {
 
   const fetchRecommendations = async () => {
     if (!isPaid) return;
-
-    if (!navigator.onLine) {
-      setRecsMsg("You're offline. Connect to the internet to generate recommendations.");
-      return;
-    }
 
     const { lovedCount, topGenres } = lovedGenreProfile;
 
@@ -756,7 +760,9 @@ export default function TVShowTracker() {
 
       setRecs(sorted);
       saveRecsCache(isPaid, sorted);
-      setRecsMsg(sorted.length ? "" : "No recommendations found. Try rating more shows 4★–5★.");
+      setRecsMsg(
+        sorted.length ? "" : "No recommendations found. Try rating more shows 4★–5★."
+      );
     } catch (e) {
       console.warn("fetchRecommendations failed:", e?.message || e);
       setRecsMsg("Could not fetch recommendations right now.");
@@ -771,13 +777,11 @@ export default function TVShowTracker() {
       setSearchResults([]);
       return;
     }
-
     if (!navigator.onLine) {
-      // Offline: intentionally no search
       setSearchResults([]);
+      setIsSearching(false);
       return;
     }
-
     setIsSearching(true);
     try {
       const res = await fetch(
@@ -807,7 +811,6 @@ export default function TVShowTracker() {
   };
 
   const fetchShowDetails = async (id) => {
-    if (!navigator.onLine) return null;
     try {
       const resp = await fetch(`https://api.tvmaze.com/shows/${id}?embed=episodes`);
       return await resp.json();
@@ -1276,7 +1279,8 @@ export default function TVShowTracker() {
                         <div className="text-xs text-slate-200 mt-1">
                           Cloud updated: {fmtTime(conflict.remoteUpdatedAt)} <br />
                           This device changed: {fmtTime(conflict.localChangedAt)} <br />
-                          Cloud shows: {conflict.remoteCount} • Local shows: {conflict.localCount}
+                          Cloud shows: {conflict.remoteCount} • Local shows:{" "}
+                          {conflict.localCount}
                         </div>
                         <div className="mt-3 flex flex-col gap-2">
                           <button
@@ -1313,12 +1317,7 @@ export default function TVShowTracker() {
                   <label className="flex items-center gap-2 px-4 py-3 hover:bg-slate-700 cursor-pointer">
                     <Upload className="w-4 h-4" />
                     <span>Import Data (JSON)</span>
-                    <input
-                      type="file"
-                      accept=".json"
-                      onChange={importData}
-                      className="hidden"
-                    />
+                    <input type="file" accept=".json" onChange={importData} className="hidden" />
                   </label>
 
                   <button
@@ -1362,17 +1361,16 @@ export default function TVShowTracker() {
                     Donate via Venmo
                   </a>
 
-                  {/* Dev-only: quick toggle paid state (remove before stores) */}
-                  <div className="px-3 py-2 text-xs text-slate-400 border-t border-slate-700">
-                    Developer
-                  </div>
-                  <div className="px-4 py-3">
+                  {/* Simple dev toggle for paid (remove later) */}
+                  <div className="px-4 py-3 border-t border-slate-700">
+                    <div className="text-xs text-slate-400 mb-2">
+                      Dev: Paid unlock (temporary)
+                    </div>
                     <button
-                      onClick={() => setPaid(!isPaid)}
+                      onClick={() => setIsPaid((v) => !v)}
                       className="w-full rounded bg-slate-700 hover:bg-slate-600 px-3 py-2 text-sm"
-                      title="Temporary toggle for testing paid gating. Remove before app stores."
                     >
-                      {isPaid ? "Set to FREE (test)" : "Set to PAID (test)"}
+                      {isPaid ? "Set to FREE" : "Set to PAID"}
                     </button>
                   </div>
                 </div>
@@ -1384,107 +1382,118 @@ export default function TVShowTracker() {
         <p className="text-slate-300 mt-2">Never lose track of what you're watching</p>
       </header>
 
-      {/* RECOMMENDATIONS (PAID) */}
-      {isPaid ? (
-        <div className="mb-8 bg-slate-800 rounded-lg p-6 shadow-xl">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h2 className="text-xl font-semibold flex items-center gap-2">
-                <span className="text-yellow-300">★</span> Recommendations
-              </h2>
-              <p className="text-sm text-slate-300 mt-1">
-                Based on your 4–5★ shows{" "}
-                {lovedGenreProfile.topGenres.length
-                  ? `(top genres: ${lovedGenreProfile.topGenres.join(", ")})`
-                  : ""}
-              </p>
+      {/* RECOMMENDATIONS */}
+      <div className="mb-8 bg-slate-800 rounded-lg p-6 shadow-xl">
+        {!isPaid ? (
+          <>
+            <h2 className="text-xl font-semibold flex items-center gap-2">
+              <span className="text-yellow-300">★</span> Recommendations (Paid)
+            </h2>
+            <p className="text-sm text-slate-300 mt-2">
+              Unlock Recommendations with the $1.99 one-time purchase.
+            </p>
+          </>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-xl font-semibold flex items-center gap-2">
+                  <span className="text-yellow-300">★</span> Recommendations
+                </h2>
+                <p className="text-sm text-slate-300 mt-1">
+                  Based on your 4–5★ shows{" "}
+                  {lovedGenreProfile.topGenres.length
+                    ? `(top genres: ${lovedGenreProfile.topGenres.join(", ")})`
+                    : ""}
+                </p>
+              </div>
+
+              <div className="flex gap-2">
+                <button
+                  onClick={fetchRecommendations}
+                  disabled={recsLoading}
+                  className="px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 disabled:opacity-50 font-semibold"
+                >
+                  {recsLoading ? "Generating…" : "Generate"}
+                </button>
+                <button
+                  onClick={() => {
+                    setRecs([]);
+                    saveRecsCache(isPaid, []);
+                    setRecsMsg("");
+                  }}
+                  className="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600"
+                >
+                  Clear
+                </button>
+              </div>
             </div>
 
-            <div className="flex gap-2">
-              <button
-                onClick={fetchRecommendations}
-                disabled={recsLoading}
-                className="px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 disabled:opacity-50 font-semibold"
-              >
-                {recsLoading ? "Generating…" : "Generate"}
-              </button>
-              <button
-                onClick={() => {
-                  setRecs([]);
-                  saveRecsCache(true, []);
-                  setRecsMsg("");
-                }}
-                className="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600"
-              >
-                Clear
-              </button>
-            </div>
-          </div>
+            {recsMsg && <div className="mt-3 text-sm text-slate-300">{recsMsg}</div>}
 
-          {recsMsg && <div className="mt-3 text-sm text-slate-300">{recsMsg}</div>}
+            {!recsMsg && lovedGenreProfile.lovedCount === 0 && (
+              <div className="mt-3 text-sm text-slate-300">
+                Rate a show 4★ or 5★ and hit <strong>Generate</strong>.
+              </div>
+            )}
 
-          {!recsMsg && lovedGenreProfile.lovedCount === 0 && (
-            <div className="mt-3 text-sm text-slate-300">
-              Rate a show 4★ or 5★ and hit <strong>Generate</strong>.
-            </div>
-          )}
-
-          {recs.length > 0 && (
-            <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
-              {recs.map((r) => (
-                <div key={r.id} className="bg-slate-700 rounded-lg p-4 border border-slate-600">
-                  <div className="flex gap-3">
-                    {r.image ? (
-                      <img src={r.image} alt={r.name} className="w-16 h-24 object-cover rounded" />
-                    ) : (
-                      <div className="w-16 h-24 rounded bg-slate-600 flex items-center justify-center text-slate-300">
-                        <Tv className="w-6 h-6" />
-                      </div>
-                    )}
-                    <div className="flex-1">
-                      <div className="font-semibold">{r.name}</div>
-                      <div className="text-xs text-slate-300 mt-1">
-                        {r.premiered ? r.premiered.slice(0, 4) : ""}{" "}
-                        {r.genres?.length ? `• ${r.genres.join(", ")}` : ""}
-                      </div>
-                      <div className="mt-3 flex gap-2 items-center">
-                        <button
-                          onClick={() =>
-                            addShow(
-                              {
-                                id: r.id,
-                                name: r.name,
-                                image: r.image ? { medium: r.image, original: r.image } : undefined,
-                              },
-                              false
-                            )
-                          }
-                          disabled={isShowAdded(r.id)}
-                          className="px-3 py-2 rounded bg-green-600 hover:bg-green-700 disabled:opacity-50 text-sm font-semibold"
-                        >
-                          {isShowAdded(r.id) ? "Added" : "Add"}
-                        </button>
-                        <span className="text-xs text-slate-400" title="Relevance score">
-                          score {r.score}
-                        </span>
+            {recs.length > 0 && (
+              <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+                {recs.map((r) => (
+                  <div
+                    key={r.id}
+                    className="bg-slate-700 rounded-lg p-4 border border-slate-600"
+                  >
+                    <div className="flex gap-3">
+                      {r.image ? (
+                        <img
+                          src={r.image}
+                          alt={r.name}
+                          className="w-16 h-24 object-cover rounded"
+                        />
+                      ) : (
+                        <div className="w-16 h-24 rounded bg-slate-600 flex items-center justify-center text-slate-300">
+                          <Tv className="w-6 h-6" />
+                        </div>
+                      )}
+                      <div className="flex-1">
+                        <div className="font-semibold">{r.name}</div>
+                        <div className="text-xs text-slate-300 mt-1">
+                          {r.premiered ? r.premiered.slice(0, 4) : ""}{" "}
+                          {r.genres?.length ? `• ${r.genres.join(", ")}` : ""}
+                        </div>
+                        <div className="mt-3 flex gap-2 items-center">
+                          <button
+                            onClick={() =>
+                              addShow(
+                                {
+                                  id: r.id,
+                                  name: r.name,
+                                  image: r.image
+                                    ? { medium: r.image, original: r.image }
+                                    : undefined,
+                                },
+                                false
+                              )
+                            }
+                            disabled={isShowAdded(r.id)}
+                            className="px-3 py-2 rounded bg-green-600 hover:bg-green-700 disabled:opacity-50 text-sm font-semibold"
+                          >
+                            {isShowAdded(r.id) ? "Added" : "Add"}
+                          </button>
+                          <span className="text-xs text-slate-400" title="Relevance score">
+                            score {r.score}
+                          </span>
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      ) : (
-        <div className="mb-8 bg-slate-800 rounded-lg p-6 shadow-xl border border-slate-700">
-          <h2 className="text-xl font-semibold flex items-center gap-2">
-            <span className="text-yellow-300">★</span> Recommendations (Paid)
-          </h2>
-          <p className="text-sm text-slate-300 mt-2">
-            Unlock Recommendations with the $1.99 one-time purchase.
-          </p>
-        </div>
-      )}
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
 
       {/* SEARCH / ADD */}
       <div className="mb-8 bg-slate-800 rounded-lg p-6 shadow-xl">
@@ -1494,8 +1503,8 @@ export default function TVShowTracker() {
         </h2>
 
         {!navigator.onLine && (
-          <div className="mb-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-slate-200">
-            You’re offline. Connect to the internet to search and add new shows.
+          <div className="mb-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200">
+            You're offline. Connect to the internet to search and add new shows.
           </div>
         )}
 
@@ -1507,6 +1516,7 @@ export default function TVShowTracker() {
             placeholder="Search for a TV show..."
             className="w-full pl-12 pr-4 py-3 bg-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
             type="text"
+            disabled={!navigator.onLine}
           />
         </div>
 
@@ -1548,7 +1558,6 @@ export default function TVShowTracker() {
                       checked={isChecked}
                       onChange={() => toggleShowSelection(s.id)}
                       className="w-5 h-5 rounded"
-                      disabled={!navigator.onLine}
                     />
                   )}
                   {s.image?.medium && (
@@ -1642,7 +1651,11 @@ export default function TVShowTracker() {
                 <div className="p-4">
                   <div className="flex items-start gap-4">
                     {show.image && (
-                      <img src={show.image} alt={show.name} className="w-20 h-28 object-cover rounded" />
+                      <img
+                        src={show.image}
+                        alt={show.name}
+                        className="w-20 h-28 object-cover rounded"
+                      />
                     )}
                     <div className="flex-1">
                       <div className="flex items-start justify-between mb-2">
@@ -1671,12 +1684,8 @@ export default function TVShowTracker() {
                               value={show.rating || 0}
                               onChange={(n) => setShowRating(show.id, n)}
                               onClear={() => setShowRating(show.id, 0)}
+                              onChangeCapture={() => {}}
                             />
-                            {!isPaid && (
-                              <div className="text-xs text-slate-400 mt-1">
-                                Ratings are a paid feature.
-                              </div>
-                            )}
                           </div>
                         </div>
 
@@ -1694,7 +1703,9 @@ export default function TVShowTracker() {
                           <span className="text-sm text-slate-400">Viewing:</span>
                           <select
                             value={show.currentRewatch || 1}
-                            onChange={(e) => switchToWatch(show.id, parseInt(e.target.value))}
+                            onChange={(e) =>
+                              switchToWatch(show.id, parseInt(e.target.value))
+                            }
                             className="px-3 py-1 bg-slate-700 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                           >
                             <option value={1}>First Watch</option>
@@ -1742,7 +1753,11 @@ export default function TVShowTracker() {
                           onClick={() => setExpandedShow(isExpanded ? null : show.id)}
                           className="flex items-center gap-2 text-purple-400 hover:text-purple-300"
                         >
-                          {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                          {isExpanded ? (
+                            <ChevronDown className="w-4 h-4" />
+                          ) : (
+                            <ChevronRight className="w-4 h-4" />
+                          )}
                           {isExpanded ? "Hide" : "Show"} Seasons & Episodes
                         </button>
 
@@ -1777,7 +1792,11 @@ export default function TVShowTracker() {
                                   onClick={() => setExpandedSeason(isOpen ? null : sid)}
                                   className="flex items-center gap-2"
                                 >
-                                  {isOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                                  {isOpen ? (
+                                    <ChevronDown className="w-4 h-4" />
+                                  ) : (
+                                    <ChevronRight className="w-4 h-4" />
+                                  )}
                                   <span className="font-semibold">Season {sNum}</span>
                                   <span className="text-sm text-slate-300">
                                     ({sp.watched}/{sp.total})
@@ -1818,7 +1837,9 @@ export default function TVShowTracker() {
                                       <button
                                         onClick={() => toggleEpisodeWatched(show.id, sNum, ep.id)}
                                         className={`w-6 h-6 rounded border-2 flex items-center justify-center transition-colors ${
-                                          ep.watched ? "bg-purple-600 border-purple-600" : "border-slate-400"
+                                          ep.watched
+                                            ? "bg-purple-600 border-purple-600"
+                                            : "border-slate-400"
                                         }`}
                                       >
                                         {ep.watched && <Check className="w-4 h-4" />}
