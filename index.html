@@ -1,19 +1,38 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>TV Tracker</title>
-  <link rel="canonical" href="https://tvtracker.me/" />
-  <meta name="description" content="Track your shows and episodes." />
-  <meta property="og:title" content="TV Tracker" />
-  <meta property="og:url" content="https://tvtracker.me/" />
-  <meta property="og:type" content="website" />
-  <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="icon" href="/path/to/your/favicon.ico" type="image/x-icon">
-</head>
-<body>
-  <div id="root"></div>
-  <script type="module" src="/src/main.jsx"></script>
-</body>
+  <head>
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-SWF259TQG6"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+
+      gtag('config', 'G-SWF259TQG6', {
+        anonymize_ip: true
+      });
+    </script>
+
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>TV Tracker</title>
+    <meta name="description" content="Track your shows and episodes." />
+
+    <link rel="canonical" href="https://tvtracker.me/" />
+    <meta property="og:title" content="TV Tracker" />
+    <meta property="og:url" content="https://tvtracker.me/" />
+    <meta property="og:type" content="website" />
+
+    <!-- Tailwind CDN (fine for now) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Favicon (update path if needed) -->
+    <link rel="icon" href="/favicon.ico" type="image/x-icon">
+  </head>
+
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
 </html>
