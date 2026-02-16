@@ -13,26 +13,69 @@ import {
   CheckCircle,
   Menu,
   DollarSign,
+  Lock,
+  Archive,
+  ArchiveRestore,
+  RefreshCcw,
+  X,
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import { getSupabase } from "./lib/supabase";
 
 /**
  * TVShowTracker (Supabase-enabled)
- * - LocalStorage persistence
- * - Optional cloud sync (Supabase) when signed in
- * - TVMaze search
- * - Multi-select add, “already added” badge
- * - Rewatch system (Watch #2, #3, …)
- * - One-click mark season complete/unmark
- * - Sort by: added/title/year/genre
- * - Progress bar switches purple->green at 100%
- * - Hamburger menu with Import/Export + Donate + Account (Google/email magic link)
  *
- * Paid:
- * - Recommendations are paid-only
- * - Paid entitlement is read from Supabase table: public.tvtracker_profiles (user_id, is_paid)
+ * Core (FREE, capped to 15 tracked shows):
+ * - Track progress across shows and episodes
+ * - Want to Watch / In Progress / Completed categories
+ * - Sync (Supabase) when signed in
+ *
+ * Paid (Stripe entitlement, server-truth):
+ * - Ratings (stars) + advanced sorting options (Year/Genre) + Genre filter UI
+ * - Recommendations are also paid-only (kept in hamburger menu)
+ *
+ * Data model changes:
+ * - Each show now has:
+ *    status: "want_to_watch" | "in_progress" | "completed"
+ *    isArchived: boolean
+ * - Status is based on FIRST WATCH progress (rewatches do not affect status)
+ *
+ * Category behavior:
+ * - Adding a show => Want to Watch
+ * - First episode watched (first watch) => In Progress
+ * - 100% watched (first watch) => Completed
+ * - New episodes added to a previously completed show => auto-downgrade to In Progress
+ * - If user resets/unmarks all watched (first watch):
+ *    - If Archived OR currently in a Rewatch view => do NOT force Want to Watch
+ *    - Else => Want to Watch
+ *
+ * Paid entitlement:
+ * - Reads from public.tvtracker_profiles (user_id, is_paid)
+ * - Unlock button calls a Supabase Edge Function to create Checkout URL and redirects
+ *   (you must implement the Edge Function; this file just invokes it).
  */
+
+// -----------------------------
+// Plan / gating
+// -----------------------------
+const FREE_SHOW_LIMIT = 15;
+
+// -----------------------------
+// Status model
+// -----------------------------
+const STATUS = {
+  WANT: "want_to_watch",
+  PROGRESS: "in_progress",
+  DONE: "completed",
+};
+
+const FILTERS = [
+  { key: "all", label: "All Shows" },
+  { key: STATUS.PROGRESS, label: "In Progress" },
+  { key: STATUS.WANT, label: "Want to Watch" },
+  { key: STATUS.DONE, label: "Completed" },
+  { key: "archived", label: "Archived" },
+];
 
 // -----------------------------
 // Alpha jump + article-agnostic sorting
@@ -52,17 +95,18 @@ function alphaGroupKey(title) {
 }
 
 // ---------- UI preferences persistence (sort/filter) ----------
-const UI_PREFS_KEY = "tvtracker.uiPrefs.v2";
+const UI_PREFS_KEY = "tvtracker.uiPrefs.v3";
 function loadUIPrefs() {
   try {
     const raw = localStorage.getItem(UI_PREFS_KEY);
     const parsed = raw ? JSON.parse(raw) : null;
     return {
-      filterStatus: parsed?.filterStatus ?? "in-progress",
+      filterStatus: parsed?.filterStatus ?? STATUS.PROGRESS,
       sortBy: parsed?.sortBy ?? "title",
+      genreFilter: parsed?.genreFilter ?? "all",
     };
   } catch {
-    return { filterStatus: "in-progress", sortBy: "title" };
+    return { filterStatus: STATUS.PROGRESS, sortBy: "title", genreFilter: "all" };
   }
 }
 function saveUIPrefs(next) {
@@ -91,10 +135,7 @@ function loadRecsCache(isPaid) {
 function saveRecsCache(isPaid, items) {
   if (!isPaid) return;
   try {
-    localStorage.setItem(
-      RECS_CACHE_KEY,
-      JSON.stringify({ ts: Date.now(), items })
-    );
+    localStorage.setItem(RECS_CACHE_KEY, JSON.stringify({ ts: Date.now(), items }));
   } catch {
     /* ignore */
   }
@@ -103,12 +144,7 @@ function saveRecsCache(isPaid, items) {
 // ---------- Sync meta ----------
 const SYNC_META_KEY = "tvtracker.syncMeta.v1";
 function randomId() {
-  return (
-    "dev_" +
-    Math.random().toString(16).slice(2) +
-    "_" +
-    Date.now().toString(16)
-  );
+  return "dev_" + Math.random().toString(16).slice(2) + "_" + Date.now().toString(16);
 }
 function loadSyncMeta() {
   try {
@@ -159,11 +195,52 @@ function fmtTime(ts) {
   }
 }
 
+// -----------------------------
+// First-watch progress helpers (status is based on FIRST WATCH only)
+// -----------------------------
+function getFirstWatchSeasons(show) {
+  return show?.seasons || {};
+}
+function firstWatchCounts(show) {
+  try {
+    const seasons = getFirstWatchSeasons(show);
+    let total = 0;
+    let watched = 0;
+    Object.values(seasons).forEach((eps) => {
+      total += (eps || []).length;
+      watched += (eps || []).filter((e) => e?.watched).length;
+    });
+    return { watched, total };
+  } catch {
+    return { watched: 0, total: 0 };
+  }
+}
+function inferStatusFromFirstWatch(show) {
+  const { watched, total } = firstWatchCounts(show);
+  if (watched === 0) return STATUS.WANT;
+  if (total > 0 && watched >= total) return STATUS.DONE;
+  return STATUS.PROGRESS;
+}
+
 // ---------- Data normalization (supports legacy arrays, and v2 envelopes) ----------
 function normalizeShow(s) {
-  return {
+  const base = {
     ...s,
     rating: typeof s.rating === "number" ? s.rating : 0,
+    isArchived: !!s.isArchived,
+  };
+
+  // Migrate legacy "Status" derived from progress if missing/invalid
+  const valid =
+    base.status === STATUS.WANT || base.status === STATUS.PROGRESS || base.status === STATUS.DONE;
+
+  const status = valid ? base.status : inferStatusFromFirstWatch(base);
+
+  // If legacy had 100% progress but status not set, ensure completed
+  // (this also enforces your choice: completed => watched_episodes_count == total, which we simulate via status)
+  return {
+    ...base,
+    status,
   };
 }
 function normalizeLibrary(list) {
@@ -174,15 +251,10 @@ function unwrapRemoteData(remoteData) {
   if (Array.isArray(remoteData)) {
     return { shows: normalizeLibrary(remoteData), updatedAt: 0, deviceId: "" };
   }
-  if (
-    remoteData &&
-    typeof remoteData === "object" &&
-    Array.isArray(remoteData.shows)
-  ) {
+  if (remoteData && typeof remoteData === "object" && Array.isArray(remoteData.shows)) {
     return {
       shows: normalizeLibrary(remoteData.shows),
-      updatedAt:
-        typeof remoteData.updatedAt === "number" ? remoteData.updatedAt : 0,
+      updatedAt: typeof remoteData.updatedAt === "number" ? remoteData.updatedAt : 0,
       deviceId: typeof remoteData.deviceId === "string" ? remoteData.deviceId : "",
     };
   }
@@ -197,8 +269,8 @@ function makeRemoteEnvelope(shows, meta) {
   };
 }
 
-// ---------- Stars UI ----------
-function Stars({ value, onChange, onClear, size = "text-lg" }) {
+// ---------- Stars UI (paid-gated) ----------
+function Stars({ value, onChange, onClear, size = "text-lg", disabled = false, disabledHint }) {
   return (
     <div className="flex items-center gap-1">
       {[1, 2, 3, 4, 5].map((n) => {
@@ -207,29 +279,39 @@ function Stars({ value, onChange, onClear, size = "text-lg" }) {
           <button
             key={n}
             type="button"
-            onClick={() => onChange(n)}
+            onClick={() => {
+              if (disabled) return;
+              onChange(n);
+            }}
             className={`${size} leading-none ${
               active ? "text-yellow-400" : "text-slate-500"
-            } hover:text-yellow-300 transition-colors`}
+            } ${disabled ? "opacity-50 cursor-not-allowed" : "hover:text-yellow-300"} transition-colors`}
             aria-label={`${n} star${n === 1 ? "" : "s"}`}
-            title={n === 1 ? "Didn't like it" : n === 5 ? "Loved it" : `${n} stars`}
+            title={disabled ? disabledHint || "Paid feature" : n === 1 ? "Didn't like it" : n === 5 ? "Loved it" : `${n} stars`}
           >
             ★
           </button>
         );
       })}
-      <span className="ml-2 text-xs text-slate-400">
-        {value ? `${value}/5` : "Unrated"}
-      </span>
+      <span className="ml-2 text-xs text-slate-400">{value ? `${value}/5` : "Unrated"}</span>
       {value ? (
         <button
           type="button"
-          onClick={onClear}
-          className="ml-2 text-xs text-slate-400 hover:text-slate-200 underline"
-          title="Clear rating"
+          onClick={() => {
+            if (disabled) return;
+            onClear();
+          }}
+          className={`ml-2 text-xs ${disabled ? "text-slate-500 cursor-not-allowed" : "text-slate-400 hover:text-slate-200 underline"}`}
+          title={disabled ? disabledHint || "Paid feature" : "Clear rating"}
         >
           Clear
         </button>
+      ) : null}
+      {disabled ? (
+        <span className="ml-2 inline-flex items-center gap-1 text-xs text-slate-300">
+          <Lock className="w-3 h-3" />
+          Paid
+        </span>
       ) : null}
     </div>
   );
@@ -237,6 +319,8 @@ function Stars({ value, onChange, onClear, size = "text-lg" }) {
 
 // ---------- Merge helper ----------
 function watchedCount(show) {
+  // keep legacy merge rule: total watched across seasons in CURRENT VIEW
+  // (still used only for conflict merges; it’s fine)
   try {
     const seasons = show?.seasons || {};
     let n = 0;
@@ -262,7 +346,29 @@ function mergeLibraries(localShows, remoteShows) {
       else if (lw === rw && (s.rating || 0) > (r.rating || 0)) map.set(s.id, s);
     }
   }
-  return Array.from(map.values());
+  return Array.from(map.values()).map(normalizeShow);
+}
+
+// ---------- Modal ----------
+function Modal({ open, title, children, onClose }) {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4">
+      <div className="w-full max-w-lg rounded-xl bg-slate-900 text-white shadow-2xl border border-slate-700">
+        <div className="flex items-center justify-between border-b border-slate-700 px-5 py-4">
+          <div className="text-lg font-semibold">{title}</div>
+          <button
+            onClick={onClose}
+            className="rounded-md p-2 text-slate-300 hover:bg-slate-800"
+            aria-label="Close"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+        <div className="px-5 py-4">{children}</div>
+      </div>
+    </div>
+  );
 }
 
 export default function TVShowTracker() {
@@ -280,8 +386,7 @@ export default function TVShowTracker() {
   });
 
   useEffect(() => {
-    syncMetaRef.current =
-      saveSyncMeta({ lastLocalChangeAt: Date.now() }) || syncMetaRef.current;
+    syncMetaRef.current = saveSyncMeta({ lastLocalChangeAt: Date.now() }) || syncMetaRef.current;
 
     try {
       localStorage.setItem("tvShowTrackerData", JSON.stringify(myShows));
@@ -296,12 +401,8 @@ export default function TVShowTracker() {
 
   const [syncMsg, setSyncMsg] = useState("");
   const [syncBusy, setSyncBusy] = useState(false);
-  const [lastPulledAt, setLastPulledAt] = useState(
-    syncMetaRef.current.lastPulledAt || 0
-  );
-  const [lastPushedAt, setLastPushedAt] = useState(
-    syncMetaRef.current.lastPushedAt || 0
-  );
+  const [lastPulledAt, setLastPulledAt] = useState(syncMetaRef.current.lastPulledAt || 0);
+  const [lastPushedAt, setLastPushedAt] = useState(syncMetaRef.current.lastPushedAt || 0);
 
   const [conflict, setConflict] = useState(null);
 
@@ -310,16 +411,13 @@ export default function TVShowTracker() {
 
   // ---------- Paid entitlement ----------
   const [isPaid, setIsPaid] = useState(false);
+  const [checkoutBusy, setCheckoutBusy] = useState(false);
 
   const ensureProfileRow = async (userId) => {
     const sp = getSupabase();
     if (!sp || !userId) return;
     try {
-      // Ensure a row exists (RLS policy must allow insert for own user_id)
-      await sp.from("tvtracker_profiles").upsert(
-        { user_id: userId },
-        { onConflict: "user_id" }
-      );
+      await sp.from("tvtracker_profiles").upsert({ user_id: userId }, { onConflict: "user_id" });
     } catch {
       // ignore
     }
@@ -342,6 +440,54 @@ export default function TVShowTracker() {
       setIsPaid(!!data?.is_paid);
     } catch {
       setIsPaid(false);
+    }
+  };
+
+  // Stripe checkout (Edge Function)
+  // Expected Edge function: create_tvtracker_checkout
+  // Returns: { url: "https://checkout.stripe.com/..." }
+  const startCheckout = async () => {
+    if (!isSignedIn) {
+      alert("Please sign in first so your purchase can attach to your account.");
+      return;
+    }
+    const sp = getSupabase();
+    if (!sp) {
+      alert("Supabase is not configured.");
+      return;
+    }
+    setCheckoutBusy(true);
+    try {
+      const { data: sessionData } = await sp.auth.getSession();
+      const user = sessionData?.session?.user;
+      if (!user) {
+        alert("Please sign in again.");
+        return;
+      }
+
+      // IMPORTANT:
+      // Implement this Edge Function on your Supabase project.
+      // It should create a Stripe Checkout session and return { url }.
+      const { data, error } = await sp.functions.invoke("create_tvtracker_checkout", {
+        body: {
+          // You can use this to select one-time vs subscription in the function:
+          // type: "one_time" | "subscription"
+          // Keep it simple; decide in the Edge Function.
+          type: "one_time",
+          product: "tvtracker_unlock",
+          success_url: window.location.origin,
+          cancel_url: window.location.origin,
+        },
+      });
+
+      if (error) throw error;
+      if (!data?.url) throw new Error("Checkout URL not returned.");
+
+      window.location.href = data.url;
+    } catch (e) {
+      alert(e?.message || "Could not start checkout.");
+    } finally {
+      setCheckoutBusy(false);
     }
   };
 
@@ -375,8 +521,7 @@ export default function TVShowTracker() {
       const remoteDeviceId = remoteWrap.deviceId || "";
 
       syncMetaRef.current =
-        saveSyncMeta({ lastSeenRemoteUpdatedAt: remoteUpdatedAt }) ||
-        syncMetaRef.current;
+        saveSyncMeta({ lastSeenRemoteUpdatedAt: remoteUpdatedAt }) || syncMetaRef.current;
 
       const localChangedAt = syncMetaRef.current.lastLocalChangeAt || 0;
       const lastPulled = syncMetaRef.current.lastPulledAt || 0;
@@ -401,12 +546,11 @@ export default function TVShowTracker() {
       }
 
       if (allowOverwrite) {
-        setMyShows(remoteShows);
+        setMyShows(remoteShows.map(normalizeShow));
       }
 
       hasPulledFromCloudRef.current = true;
-      const nextMeta =
-        saveSyncMeta({ lastPulledAt: Date.now() }) || syncMetaRef.current;
+      const nextMeta = saveSyncMeta({ lastPulledAt: Date.now() }) || syncMetaRef.current;
       syncMetaRef.current = nextMeta;
       setLastPulledAt(nextMeta.lastPulledAt);
       setSyncMsg("Pulled from cloud.");
@@ -446,10 +590,7 @@ export default function TVShowTracker() {
 
       await sp
         .from("tvtracker_library")
-        .upsert(
-          { user_id: session.user.id, data: envelope },
-          { onConflict: "user_id" }
-        );
+        .upsert({ user_id: session.user.id, data: envelope }, { onConflict: "user_id" });
 
       const nextMeta =
         saveSyncMeta({
@@ -491,7 +632,7 @@ export default function TVShowTracker() {
       sp.auth.onAuthStateChange(async (_e, ses) => {
         const signed = !!ses?.user;
         setIsSignedIn(signed);
-        setUserEmail(signed ? (ses.user.email || "") : "");
+        setUserEmail(signed ? ses.user.email || "" : "");
         if (signed) {
           await refreshPaidStatus(ses.user.id);
           await pullLibrary({ allowOverwrite: true });
@@ -585,11 +726,14 @@ export default function TVShowTracker() {
   const [expandedSeason, setExpandedSeason] = useState(null);
 
   // Persisted sort/filter
-  const [filterStatus, setFilterStatus] = useState(() => loadUIPrefs().filterStatus);
-  const [sortBy, setSortBy] = useState(() => loadUIPrefs().sortBy);
+  const initialPrefs = loadUIPrefs();
+  const [filterStatus, setFilterStatus] = useState(initialPrefs.filterStatus);
+  const [sortBy, setSortBy] = useState(initialPrefs.sortBy);
+  const [genreFilter, setGenreFilter] = useState(initialPrefs.genreFilter);
+
   useEffect(() => {
-    saveUIPrefs({ filterStatus, sortBy });
-  }, [filterStatus, sortBy]);
+    saveUIPrefs({ filterStatus, sortBy, genreFilter });
+  }, [filterStatus, sortBy, genreFilter]);
 
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef(null);
@@ -603,8 +747,14 @@ export default function TVShowTracker() {
     return () => document.removeEventListener("click", onDocClick);
   }, []);
 
+  // Free cap modal
+  const [limitModalOpen, setLimitModalOpen] = useState(false);
+
   // ---------- Helpers ----------
   const isShowAdded = (id) => myShows.some((s) => s.id === id);
+
+  const trackedCount = useMemo(() => myShows.filter((s) => !s.isArchived).length, [myShows]);
+  const canAddMore = isPaid || trackedCount < FREE_SHOW_LIMIT;
 
   const getCurrentWatchData = (show) => {
     if (!show.currentRewatch || show.currentRewatch === 1) {
@@ -615,6 +765,7 @@ export default function TVShowTracker() {
   };
 
   const getWatchProgress = (show) => {
+    // For display, respect current watch selection (first watch or rewatch)
     const { seasons } = getCurrentWatchData(show);
     let total = 0;
     let watched = 0;
@@ -626,14 +777,31 @@ export default function TVShowTracker() {
     return { watched, total, percentage };
   };
 
+  const getFirstWatchProgress = (show) => {
+    const { watched, total } = firstWatchCounts(show);
+    const percentage = total > 0 ? Math.round((watched / total) * 100) : 0;
+    return { watched, total, percentage };
+  };
+
   const getSeasonProgress = (episodes) => {
     const watched = episodes.filter((e) => e.watched).length;
     return { watched, total: episodes.length };
   };
 
+  const setStatusByFirstWatch = (show) => {
+    // Computes status and writes back to show.status (first-watch only)
+    const inferred = inferStatusFromFirstWatch(show);
+    return inferred;
+  };
+
   const getSortedShows = (shows) => {
     const arr = [...shows];
-    switch (sortBy) {
+
+    // Paid gating: free users only get Added + Title sorting
+    const effectiveSort =
+      !isPaid && (sortBy === "year" || sortBy === "genre") ? "title" : sortBy;
+
+    switch (effectiveSort) {
       case "title":
         arr.sort((a, b) =>
           normalizeTitleForSort(a.name).localeCompare(normalizeTitleForSort(b.name))
@@ -662,6 +830,39 @@ export default function TVShowTracker() {
 
   const setShowRating = (id, rating) => {
     setMyShows((prev) => prev.map((s) => (s.id === id ? { ...s, rating } : s)));
+  };
+
+  const setShowArchived = (id, isArchived) => {
+    setMyShows((prev) => prev.map((s) => (s.id === id ? { ...s, isArchived } : s)));
+  };
+
+  const resetFirstWatchProgress = (id) => {
+    // clears watched flags for first watch seasons only
+    setMyShows((prev) =>
+      prev.map((show) => {
+        if (show.id !== id) return show;
+
+        const isArchived = !!show.isArchived;
+        const inRewatchView = !!show.currentRewatch && show.currentRewatch > 1;
+
+        const nextSeasons = {};
+        Object.keys(show.seasons || {}).forEach((sNum) => {
+          nextSeasons[sNum] = (show.seasons[sNum] || []).map((e) => ({ ...e, watched: false }));
+        });
+
+        const nextShow = { ...show, seasons: nextSeasons };
+
+        // Rule: if neither archive nor rewatch => Want to Watch
+        if (!isArchived && !inRewatchView) {
+          nextShow.status = STATUS.WANT;
+        } else {
+          // otherwise, keep status as-is (user intent)
+          nextShow.status = show.status || inferStatusFromFirstWatch(nextShow);
+        }
+
+        return nextShow;
+      })
+    );
   };
 
   // ---------- Recommendations ----------
@@ -764,7 +965,9 @@ export default function TVShowTracker() {
 
       setRecs(sorted);
       saveRecsCache(isPaid, sorted);
-      setRecsMsg(sorted.length ? "" : "No recommendations found. Try rating more shows 4★–5★.");
+      setRecsMsg(
+        sorted.length ? "" : "No recommendations found. Try rating more shows 4★–5★."
+      );
     } catch (e) {
       console.warn("fetchRecommendations failed:", e?.message || e);
       setRecsMsg("Could not fetch recommendations right now.");
@@ -821,9 +1024,21 @@ export default function TVShowTracker() {
     }
   };
 
+  const enforceFreeCapOrBlock = () => {
+    if (isPaid) return true;
+    const count = myShows.filter((s) => !s.isArchived).length;
+    if (count >= FREE_SHOW_LIMIT) {
+      setLimitModalOpen(true);
+      return false;
+    }
+    return true;
+  };
+
   const addShow = async (show, clearAfter = true) => {
     if (!navigator.onLine) return;
     if (isShowAdded(show.id)) return;
+
+    if (!enforceFreeCapOrBlock()) return;
 
     const details = await fetchShowDetails(show.id);
     if (!details) return;
@@ -842,7 +1057,7 @@ export default function TVShowTracker() {
       });
     });
 
-    const newShow = {
+    const newShow = normalizeShow({
       id: show.id,
       name: show.name,
       premiered: details.premiered || "",
@@ -853,7 +1068,10 @@ export default function TVShowTracker() {
       addedDate: new Date().toISOString(),
       rewatches: [],
       rating: 0,
-    };
+      // NEW: starts in Want to Watch
+      status: STATUS.WANT,
+      isArchived: false,
+    });
 
     setMyShows((prev) => [newShow, ...prev]);
 
@@ -872,10 +1090,84 @@ export default function TVShowTracker() {
       .filter((s) => selectedShows.has(s.id) && !isShowAdded(s.id));
 
     for (const s of toAdd) {
+      if (!enforceFreeCapOrBlock()) break;
       // eslint-disable-next-line no-await-in-loop
       await addShow(s, false);
     }
     setSelectedShows(new Set());
+  };
+
+  // ---------- Episode refresh (new episodes) ----------
+  // Called on demand (manual button) and when expanding a show.
+  // Looks for any episodes not present locally and appends them (watched:false).
+  // If show was completed and new episodes are appended, auto-downgrade to In Progress.
+  const refreshEpisodesForShow = async (showId) => {
+    if (!navigator.onLine) return;
+    const details = await fetchShowDetails(showId);
+    if (!details) return;
+
+    const fresh = details?._embedded?.episodes || [];
+    const freshBySeason = {};
+    fresh.forEach((ep) => {
+      const s = ep.season;
+      if (!freshBySeason[s]) freshBySeason[s] = [];
+      freshBySeason[s].push({
+        id: ep.id,
+        number: ep.number,
+        name: ep.name,
+        airdate: ep.airdate,
+      });
+    });
+
+    setMyShows((prev) =>
+      prev.map((show) => {
+        if (show.id !== showId) return show;
+
+        const existing = show.seasons || {};
+        const nextSeasons = { ...existing };
+        let addedAny = false;
+
+        Object.keys(freshBySeason).forEach((sNum) => {
+          const localList = nextSeasons[sNum] ? [...nextSeasons[sNum]] : [];
+          const localIds = new Set(localList.map((e) => e.id));
+
+          const incoming = freshBySeason[sNum]
+            .slice()
+            .sort((a, b) => (a.number || 0) - (b.number || 0));
+
+          for (const ep of incoming) {
+            if (!localIds.has(ep.id)) {
+              localList.push({
+                id: ep.id,
+                number: ep.number,
+                name: ep.name,
+                airdate: ep.airdate,
+                watched: false,
+              });
+              addedAny = true;
+            }
+          }
+
+          // keep stable ordering
+          localList.sort((a, b) => (a.number || 0) - (b.number || 0));
+          nextSeasons[sNum] = localList;
+        });
+
+        const nextShow = { ...show, seasons: nextSeasons };
+
+        // If added new eps and show was completed on first watch, downgrade:
+        if (addedAny) {
+          const priorStatus = show.status || inferStatusFromFirstWatch(show);
+          if (priorStatus === STATUS.DONE) {
+            nextShow.status = STATUS.PROGRESS;
+          } else {
+            nextShow.status = priorStatus;
+          }
+        }
+
+        return normalizeShow(nextShow);
+      })
+    );
   };
 
   // ---------- Edit / track ----------
@@ -889,6 +1181,11 @@ export default function TVShowTracker() {
     setMyShows((prev) => prev.map((s) => (s.id === id ? { ...s, source: value } : s)));
   };
 
+  const reconcileStatusAfterFirstWatchChange = (show) => {
+    const status = setStatusByFirstWatch(show);
+    return { ...show, status };
+  };
+
   const toggleEpisodeWatched = (id, season, epId) => {
     setMyShows((prev) =>
       prev.map((show) => {
@@ -897,7 +1194,7 @@ export default function TVShowTracker() {
         const isFirst = !show.currentRewatch || show.currentRewatch === 1;
 
         if (isFirst) {
-          return {
+          const next = {
             ...show,
             seasons: {
               ...show.seasons,
@@ -906,9 +1203,11 @@ export default function TVShowTracker() {
               ),
             },
           };
+          return normalizeShow(reconcileStatusAfterFirstWatchChange(next));
         }
 
-        return {
+        // Rewatch changes do NOT affect main status
+        const next = {
           ...show,
           rewatches: show.rewatches.map((rw) =>
             rw.watchNumber === show.currentRewatch
@@ -924,6 +1223,7 @@ export default function TVShowTracker() {
               : rw
           ),
         };
+        return normalizeShow(next);
       })
     );
   };
@@ -936,16 +1236,17 @@ export default function TVShowTracker() {
         const isFirst = !show.currentRewatch || show.currentRewatch === 1;
 
         if (isFirst) {
-          return {
+          const next = {
             ...show,
             seasons: {
               ...show.seasons,
               [season]: show.seasons[season].map((e) => ({ ...e, watched })),
             },
           };
+          return normalizeShow(reconcileStatusAfterFirstWatchChange(next));
         }
 
-        return {
+        const next = {
           ...show,
           rewatches: show.rewatches.map((rw) =>
             rw.watchNumber === show.currentRewatch
@@ -959,6 +1260,21 @@ export default function TVShowTracker() {
               : rw
           ),
         };
+        return normalizeShow(next);
+      })
+    );
+  };
+
+  const markShowCompletedFirstWatch = (id) => {
+    // Explicit: set status completed AND set all first-watch episodes watched = true
+    setMyShows((prev) =>
+      prev.map((show) => {
+        if (show.id !== id) return show;
+        const nextSeasons = {};
+        Object.keys(show.seasons || {}).forEach((sNum) => {
+          nextSeasons[sNum] = (show.seasons[sNum] || []).map((e) => ({ ...e, watched: true }));
+        });
+        return normalizeShow({ ...show, seasons: nextSeasons, status: STATUS.DONE });
       })
     );
   };
@@ -975,19 +1291,17 @@ export default function TVShowTracker() {
           clone[s] = show.seasons[s].map((e) => ({ ...e, watched: false }));
         });
 
-        return {
+        return normalizeShow({
           ...show,
           rewatches: [...(show.rewatches || []), { watchNumber: nextNum, seasons: clone }],
           currentRewatch: nextNum,
-        };
+        });
       })
     );
   };
 
   const switchToWatch = (id, watchNumber) => {
-    setMyShows((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, currentRewatch: watchNumber } : s))
-    );
+    setMyShows((prev) => prev.map((s) => (s.id === id ? { ...s, currentRewatch: watchNumber } : s)));
   };
 
   // ---------- Export / Import ----------
@@ -1010,31 +1324,29 @@ export default function TVShowTracker() {
       "Genres",
       "Source",
       "Rating",
-      "Watched",
-      "Total",
-      "Progress %",
+      "First Watch Watched",
+      "First Watch Total",
+      "First Watch Progress %",
       "Status",
+      "Archived",
       "Rewatches",
     ];
     const rows = [header];
 
     myShows.forEach((show) => {
-      const total = Object.values(show.seasons).reduce((n, eps) => n + eps.length, 0);
-      const watched = Object.values(show.seasons).reduce(
-        (n, eps) => n + eps.filter((e) => e.watched).length,
-        0
-      );
-      const progress = total ? watched / total : 0;
+      const first = getFirstWatchProgress(show);
+      const progress = first.total ? first.watched / first.total : 0;
       rows.push([
         show.name,
         show.premiered ? show.premiered.slice(0, 4) : "",
         (show.genres || []).join(", "),
         show.source || "",
         show.rating || "",
-        watched,
-        total,
+        first.watched,
+        first.total,
         progress,
-        progress === 1 ? "✓ COMPLETED" : "In Progress",
+        show.status || inferStatusFromFirstWatch(show),
+        show.isArchived ? "yes" : "no",
         show.rewatches?.length ? `${show.rewatches.length}` : "",
       ]);
     });
@@ -1046,10 +1358,11 @@ export default function TVShowTracker() {
       { wch: 22 },
       { wch: 16 },
       { wch: 8 },
-      { wch: 9 },
-      { wch: 9 },
-      { wch: 11 },
+      { wch: 18 },
+      { wch: 16 },
+      { wch: 18 },
       { wch: 14 },
+      { wch: 10 },
       { wch: 10 },
     ];
     for (let r = 1; r < rows.length; r++) {
@@ -1076,28 +1389,73 @@ export default function TVShowTracker() {
     reader.readAsText(file);
   };
 
-  // ---------- Derived lists ----------
-  const visibleShows = useMemo(() => {
-    const filtered = myShows.filter((s) => {
-      const p = getWatchProgress(s).percentage;
-      if (filterStatus === "completed") return p === 100;
-      if (filterStatus === "in-progress") return p > 0 && p < 100;
-      return true;
+  // ---------- Derived counts + lists ----------
+  const counts = useMemo(() => {
+    const nonArchived = myShows.filter((s) => !s.isArchived);
+    const archived = myShows.filter((s) => s.isArchived);
+
+    const want = nonArchived.filter((s) => (s.status || inferStatusFromFirstWatch(s)) === STATUS.WANT).length;
+    const prog = nonArchived.filter((s) => (s.status || inferStatusFromFirstWatch(s)) === STATUS.PROGRESS).length;
+    const done = nonArchived.filter((s) => (s.status || inferStatusFromFirstWatch(s)) === STATUS.DONE).length;
+
+    return {
+      all: nonArchived.length,
+      [STATUS.WANT]: want,
+      [STATUS.PROGRESS]: prog,
+      [STATUS.DONE]: done,
+      archived: archived.length,
+    };
+  }, [myShows]);
+
+  const titleText = useMemo(() => {
+    const active = FILTERS.find((f) => f.key === filterStatus) || FILTERS[0];
+    const n = counts[filterStatus] ?? counts.all ?? 0;
+    return `${active.label} (${n})`;
+  }, [filterStatus, counts]);
+
+  const genreOptions = useMemo(() => {
+    const set = new Set();
+    myShows.forEach((s) => {
+      (s.genres || []).forEach((g) => set.add(g));
     });
-    return getSortedShows(filtered);
+    return ["all", ...Array.from(set).sort((a, b) => a.localeCompare(b))];
+  }, [myShows]);
+
+  const visibleShows = useMemo(() => {
+    const base = myShows.filter((s) => {
+      const status = s.status || inferStatusFromFirstWatch(s);
+
+      if (filterStatus === "archived") return !!s.isArchived;
+      if (filterStatus === "all") return !s.isArchived;
+
+      // status tabs are non-archived
+      if (s.isArchived) return false;
+      return status === filterStatus;
+    });
+
+    // Paid-only: genre filter (non-destructive, persisted)
+    const afterGenre =
+      isPaid && genreFilter !== "all"
+        ? base.filter((s) => (s.genres || []).includes(genreFilter))
+        : base;
+
+    return getSortedShows(afterGenre);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [myShows, filterStatus, sortBy]);
+  }, [myShows, filterStatus, sortBy, genreFilter, isPaid]);
 
   // ---------- Alpha jump dropdown ----------
   const letterRefs = useRef({});
   const alphaOptions = useMemo(() => {
-    if (sortBy !== "title") return [];
+    // only when sorting by title
+    const effectiveSort =
+      !isPaid && (sortBy === "year" || sortBy === "genre") ? "title" : sortBy;
+    if (effectiveSort !== "title") return [];
     const set = new Set();
     for (const s of visibleShows) set.add(alphaGroupKey(s?.name || ""));
     const base = Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i));
     base.push("#");
     return base.filter((l) => set.has(l));
-  }, [visibleShows, sortBy]);
+  }, [visibleShows, sortBy, isPaid]);
 
   const jumpToLetter = (letter) => {
     const el = letterRefs.current[letter];
@@ -1161,14 +1519,48 @@ export default function TVShowTracker() {
   // ---------- Render ----------
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 text-white p-4">
+      {/* FREE CAP MODAL */}
+      <Modal open={limitModalOpen} title="Upgrade to add more shows" onClose={() => setLimitModalOpen(false)}>
+        <div className="text-sm text-slate-200">
+          Free plan supports up to <span className="font-semibold">{FREE_SHOW_LIMIT}</span> tracked shows.
+        </div>
+        <div className="mt-3 text-xs text-slate-300">
+          Tip: You can archive older shows to make room.
+        </div>
+        <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:justify-end">
+          <button
+            onClick={() => {
+              setLimitModalOpen(false);
+              setMenuOpen(true);
+            }}
+            className="rounded-lg bg-slate-700 hover:bg-slate-600 px-4 py-2 text-sm font-semibold"
+          >
+            View options
+          </button>
+          <button
+            onClick={async () => {
+              setLimitModalOpen(false);
+              await startCheckout();
+            }}
+            disabled={checkoutBusy}
+            className="rounded-lg bg-purple-600 hover:bg-purple-700 disabled:opacity-50 px-4 py-2 text-sm font-semibold"
+          >
+            {checkoutBusy ? "Starting…" : "Upgrade"}
+          </button>
+        </div>
+      </Modal>
+
       {/* HEADER */}
       <header className="mb-8">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Tv className="w-8 h-8 text-purple-400" />
-            <h1 className="text-3xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
-              TV Tracker
-            </h1>
+            <div>
+              <h1 className="text-3xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
+                TV Tracker
+              </h1>
+              <p className="text-slate-300 mt-1">Never lose track of what you're watching</p>
+            </div>
           </div>
 
           <div className="flex items-center">
@@ -1200,11 +1592,51 @@ export default function TVShowTracker() {
                       <div className="text-sm text-slate-200">
                         Signed in{userEmail ? ` as ${userEmail}` : ""}
                       </div>
+
+                      <div className="mt-3 flex items-center justify-between rounded-lg bg-slate-700/50 px-3 py-2">
+                        <div className="text-xs text-slate-200">
+                          Plan:{" "}
+                          <span className="font-semibold">
+                            {isPaid ? "Paid" : `Free (limit ${FREE_SHOW_LIMIT})`}
+                          </span>
+                          {!isPaid ? (
+                            <div className="text-[11px] text-slate-300">
+                              Tracked: {trackedCount}/{FREE_SHOW_LIMIT}
+                            </div>
+                          ) : (
+                            <div className="text-[11px] text-slate-300">Unlimited tracked shows</div>
+                          )}
+                        </div>
+                        {!isPaid && (
+                          <button
+                            onClick={startCheckout}
+                            disabled={checkoutBusy}
+                            className="rounded bg-purple-600 hover:bg-purple-700 disabled:opacity-50 px-3 py-1.5 text-xs font-semibold"
+                          >
+                            {checkoutBusy ? "…" : "Upgrade"}
+                          </button>
+                        )}
+                      </div>
+
                       <button
                         onClick={signOut}
                         className="mt-3 w-full rounded bg-slate-700 hover:bg-slate-600 px-3 py-2 text-sm"
                       >
                         Sign out
+                      </button>
+
+                      <button
+                        onClick={async () => {
+                          const sp = getSupabase();
+                          const {
+                            data: { session },
+                          } = await sp.auth.getSession();
+                          await refreshPaidStatus(session?.user?.id);
+                        }}
+                        className="mt-2 w-full rounded bg-slate-700 hover:bg-slate-600 px-3 py-2 text-sm"
+                        title="Refresh paid status from the server"
+                      >
+                        Refresh paid status
                       </button>
                     </div>
                   ) : (
@@ -1239,9 +1671,7 @@ export default function TVShowTracker() {
                           >
                             {emailSending ? "Sending…" : "Send magic link"}
                           </button>
-                          {emailMsg && (
-                            <div className="text-xs text-slate-300">{emailMsg}</div>
-                          )}
+                          {emailMsg && <div className="text-xs text-slate-300">{emailMsg}</div>}
                         </div>
                       )}
                     </div>
@@ -1274,7 +1704,7 @@ export default function TVShowTracker() {
                         className="flex-1 rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-50 px-3 py-2 text-sm"
                         title="Pull your library from the cloud (cloud → this device)"
                       >
-                        Pull from Cloud
+                        Pull
                       </button>
                       <button
                         onClick={syncNowPush}
@@ -1282,7 +1712,7 @@ export default function TVShowTracker() {
                         className="flex-1 rounded bg-green-600 hover:bg-green-700 disabled:opacity-50 px-3 py-2 text-sm font-medium"
                         title="Sync now (this device → cloud)"
                       >
-                        Sync Now
+                        Sync
                       </button>
                     </div>
 
@@ -1294,8 +1724,7 @@ export default function TVShowTracker() {
                         <div className="text-xs text-slate-200 mt-1">
                           Cloud updated: {fmtTime(conflict.remoteUpdatedAt)} <br />
                           This device changed: {fmtTime(conflict.localChangedAt)} <br />
-                          Cloud shows: {conflict.remoteCount} • Local shows:{" "}
-                          {conflict.localCount}
+                          Cloud shows: {conflict.remoteCount} • Local shows: {conflict.localCount}
                         </div>
                         <div className="mt-3 flex flex-col gap-2">
                           <button
@@ -1324,7 +1753,7 @@ export default function TVShowTracker() {
                     )}
                   </div>
 
-                  {/* Recommendations */}
+                  {/* Recommendations (kept in hamburger menu) */}
                   <div className="px-3 py-2 text-xs text-slate-400 border-b border-slate-700">
                     Recommendations
                   </div>
@@ -1333,17 +1762,18 @@ export default function TVShowTracker() {
                     {!isPaid ? (
                       <div className="text-sm text-slate-300">
                         <div className="font-semibold text-slate-200 mb-1">Paid feature</div>
-                        Unlock Recommendations with the $1.99 one-time purchase.
+                        Recommendations, ratings, advanced sorting, and genre filter are unlocked with an upgrade.
                         <div className="mt-3">
                           <button
-                            onClick={() => alert("Hook this to Stripe Checkout. Webhook sets tvtracker_profiles.is_paid = true.")}
-                            className="w-full rounded bg-purple-600 hover:bg-purple-700 px-3 py-2 text-sm font-medium"
+                            onClick={startCheckout}
+                            disabled={checkoutBusy}
+                            className="w-full rounded bg-purple-600 hover:bg-purple-700 disabled:opacity-50 px-3 py-2 text-sm font-medium"
                           >
-                            Unlock ($1.99)
+                            {checkoutBusy ? "Starting…" : "Upgrade"}
                           </button>
                         </div>
                         <div className="mt-2 text-xs text-slate-400">
-                          (After purchase, your account is marked paid in Supabase.)
+                          (Purchase attaches to your signed-in account.)
                         </div>
                       </div>
                     ) : (
@@ -1375,9 +1805,7 @@ export default function TVShowTracker() {
                           </button>
                         </div>
 
-                        {recsMsg && (
-                          <div className="mt-3 text-sm text-slate-300">{recsMsg}</div>
-                        )}
+                        {recsMsg && <div className="mt-3 text-sm text-slate-300">{recsMsg}</div>}
 
                         {recs.length > 0 && (
                           <div className="mt-4 space-y-2 max-h-80 overflow-y-auto pr-1">
@@ -1406,8 +1834,9 @@ export default function TVShowTracker() {
                                     </div>
                                     <div className="mt-2 flex gap-2 items-center">
                                       <button
-                                        onClick={() =>
-                                          addShow(
+                                        onClick={async () => {
+                                          if (!enforceFreeCapOrBlock()) return;
+                                          await addShow(
                                             {
                                               id: r.id,
                                               name: r.name,
@@ -1416,8 +1845,8 @@ export default function TVShowTracker() {
                                                 : undefined,
                                             },
                                             false
-                                          )
-                                        }
+                                          );
+                                        }}
                                         disabled={isShowAdded(r.id)}
                                         className="px-3 py-1.5 rounded bg-green-600 hover:bg-green-700 disabled:opacity-50 text-xs font-semibold"
                                       >
@@ -1493,8 +1922,6 @@ export default function TVShowTracker() {
             </div>
           </div>
         </div>
-
-        <p className="text-slate-300 mt-2">Never lose track of what you're watching</p>
       </header>
 
       {/* SEARCH / ADD (constrained width) */}
@@ -1507,6 +1934,24 @@ export default function TVShowTracker() {
         {!navigator.onLine && (
           <div className="mb-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200">
             You're offline. Connect to the internet to search and add new shows.
+          </div>
+        )}
+
+        {!isPaid && (
+          <div className="mb-4 rounded-lg border border-slate-600 bg-slate-900/40 p-3 text-sm text-slate-200 flex items-start justify-between gap-3">
+            <div>
+              Free tier: <span className="font-semibold">{FREE_SHOW_LIMIT}</span> tracked shows.
+              <div className="text-xs text-slate-300 mt-1">
+                Tracked now: {trackedCount}/{FREE_SHOW_LIMIT} (archive to make room)
+              </div>
+            </div>
+            <button
+              onClick={startCheckout}
+              disabled={checkoutBusy}
+              className="shrink-0 rounded bg-purple-600 hover:bg-purple-700 disabled:opacity-50 px-3 py-2 text-sm font-semibold"
+            >
+              {checkoutBusy ? "…" : "Upgrade"}
+            </button>
           </div>
         )}
 
@@ -1586,7 +2031,8 @@ export default function TVShowTracker() {
                     <button
                       onClick={() => addShow(s)}
                       className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg"
-                      disabled={!navigator.onLine}
+                      disabled={!navigator.onLine || (!isPaid && !canAddMore)}
+                      title={!isPaid && !canAddMore ? `Free limit is ${FREE_SHOW_LIMIT}` : ""}
                     >
                       Add
                     </button>
@@ -1598,59 +2044,93 @@ export default function TVShowTracker() {
         )}
       </div>
 
-      {/* SORT / FILTER + ALPHA JUMP */}
+      {/* CATEGORY TABS + CONTROLS */}
       {myShows.length > 0 && (
-        <div className="flex flex-wrap items-center justify-between gap-3 mb-4 max-w-6xl mx-auto">
-          <div className="flex items-center gap-3 flex-wrap">
-            <h2 className="text-2xl font-semibold">
-              My Shows ({getSortedShows(myShows).length})
-            </h2>
+        <div className="max-w-6xl mx-auto mb-4 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
+              <h2 className="text-2xl font-semibold">{titleText}</h2>
 
-            {sortBy === "title" && alphaOptions.length > 0 && (
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-slate-300">Jump:</span>
-                <select
-                  className="px-3 py-2 bg-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 text-sm"
-                  defaultValue=""
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    if (!val) return;
-                    jumpToLetter(val);
-                    e.target.value = "";
-                  }}
-                  title="Jump to letter"
-                >
-                  <option value="">Select…</option>
-                  {alphaOptions.map((l) => (
-                    <option key={l} value={l}>
-                      {l}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
+              {/* Alpha jump dropdown next to count */}
+              {(!(!isPaid && (sortBy === "year" || sortBy === "genre")) ? sortBy : "title") === "title" &&
+                alphaOptions.length > 0 && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-slate-300">Jump:</span>
+                    <select
+                      className="px-3 py-2 bg-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 text-sm"
+                      defaultValue=""
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (!val) return;
+                        jumpToLetter(val);
+                        e.target.value = "";
+                      }}
+                      title="Jump to letter"
+                    >
+                      <option value="">Select…</option>
+                      {alphaOptions.map((l) => (
+                        <option key={l} value={l}>
+                          {l}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+            </div>
+
+            <div className="flex gap-3 flex-wrap">
+              {/* Sort (paid gating for Year/Genre) */}
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value)}
+                className="px-4 py-2 bg-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+              >
+                <option value="added">Sort: Recently Added</option>
+                <option value="title">Sort: Title (A–Z)</option>
+                <option value="year" disabled={!isPaid}>
+                  {!isPaid ? "Sort: Year (Paid)" : "Sort: Year (Newest)"}
+                </option>
+                <option value="genre" disabled={!isPaid}>
+                  {!isPaid ? "Sort: Genre (Paid)" : "Sort: Genre"}
+                </option>
+              </select>
+
+              {/* Genre filter (paid-only, persisted, non-destructive) */}
+              <select
+                value={genreFilter}
+                onChange={(e) => setGenreFilter(e.target.value)}
+                disabled={!isPaid}
+                className={`px-4 py-2 bg-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 ${
+                  !isPaid ? "opacity-60 cursor-not-allowed" : ""
+                }`}
+                title={!isPaid ? "Upgrade to use genre filter" : "Filter by genre"}
+              >
+                {genreOptions.map((g) => (
+                  <option key={g} value={g}>
+                    {g === "all" ? "Genre: All" : `Genre: ${g}`}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
 
-          <div className="flex gap-3">
-            <select
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value)}
-              className="px-4 py-2 bg-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
-            >
-              <option value="added">Sort: Recently Added</option>
-              <option value="title">Sort: Title (A–Z)</option>
-              <option value="year">Sort: Year (Newest)</option>
-              <option value="genre">Sort: Genre</option>
-            </select>
-            <select
-              value={filterStatus}
-              onChange={(e) => setFilterStatus(e.target.value)}
-              className="px-4 py-2 bg-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
-            >
-              <option value="all">All Shows</option>
-              <option value="in-progress">In Progress</option>
-              <option value="completed">Completed</option>
-            </select>
+          {/* Tabs */}
+          <div className="flex flex-wrap gap-2">
+            {FILTERS.map((t) => {
+              const n = counts[t.key] ?? 0;
+              const active = filterStatus === t.key;
+              return (
+                <button
+                  key={t.key}
+                  onClick={() => setFilterStatus(t.key)}
+                  className={`rounded-lg px-3 py-2 text-sm font-semibold transition ${
+                    active ? "bg-purple-600 text-white" : "bg-slate-800 hover:bg-slate-700 text-slate-100"
+                  }`}
+                >
+                  {t.label} ({n})
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
@@ -1661,7 +2141,9 @@ export default function TVShowTracker() {
           <div className="text-center py-12 bg-slate-800 rounded-lg">
             <Tv className="w-16 h-16 mx-auto mb-4 text-slate-600" />
             <p className="text-slate-400">
-              {myShows.length ? "No shows match the current filters." : "No shows yet. Add your first above!"}
+              {myShows.length
+                ? "No shows match the current filters."
+                : "No shows yet. Add your first above!"}
             </p>
           </div>
         ) : (
@@ -1669,14 +2151,25 @@ export default function TVShowTracker() {
             {visibleShows.map((show, idx) => {
               const { seasons } = getCurrentWatchData(show);
               const progress = getWatchProgress(show);
+              const first = getFirstWatchProgress(show);
+
               const pct = progress.percentage;
+              const firstPct = first.percentage;
+
               const isExpanded = expandedShow === show.id;
               const hasRewatches = (show.rewatches?.length || 0) > 0;
 
+              const status = show.status || inferStatusFromFirstWatch(show);
+
               const prev = idx > 0 ? visibleShows[idx - 1] : null;
-              const thisLetter = sortBy === "title" ? alphaGroupKey(show.name) : null;
-              const prevLetter = sortBy === "title" && prev ? alphaGroupKey(prev.name) : null;
-              const showLetterAnchor = sortBy === "title" && thisLetter && thisLetter !== prevLetter;
+              const effectiveSort =
+                !isPaid && (sortBy === "year" || sortBy === "genre") ? "title" : sortBy;
+
+              const thisLetter = effectiveSort === "title" ? alphaGroupKey(show.name) : null;
+              const prevLetter =
+                effectiveSort === "title" && prev ? alphaGroupKey(prev.name) : null;
+              const showLetterAnchor =
+                effectiveSort === "title" && thisLetter && thisLetter !== prevLetter;
 
               return (
                 <React.Fragment key={show.id}>
@@ -1691,7 +2184,7 @@ export default function TVShowTracker() {
 
                   <article
                     className={`bg-zinc-900 rounded-lg overflow-hidden border border-zinc-800 ${
-                      pct === 100 ? "ring-2 ring-green-500/50 shadow-green-500/20" : ""
+                      status === STATUS.DONE ? "ring-2 ring-green-500/50 shadow-green-500/20" : ""
                     }`}
                   >
                     <div className="p-4">
@@ -1708,12 +2201,33 @@ export default function TVShowTracker() {
                             <div>
                               <div className="flex items-center gap-2 flex-wrap">
                                 <h3 className="text-xl font-semibold">{show.name}</h3>
-                                {pct === 100 && (
+
+                                {show.isArchived && (
+                                  <span className="flex items-center gap-1 px-3 py-1 bg-slate-700 rounded-full text-xs font-bold text-white">
+                                    <Archive className="w-4 h-4" />
+                                    ARCHIVED
+                                  </span>
+                                )}
+
+                                {status === STATUS.DONE && !show.isArchived && (
                                   <span className="flex items-center gap-1 px-3 py-1 bg-gradient-to-r from-green-500 to-emerald-500 rounded-full text-xs font-bold text-white shadow-lg">
                                     <Check className="w-4 h-4" />
                                     COMPLETED
                                   </span>
                                 )}
+
+                                {status === STATUS.WANT && !show.isArchived && (
+                                  <span className="flex items-center gap-1 px-3 py-1 bg-purple-700 rounded-full text-xs font-bold text-white">
+                                    Want to Watch
+                                  </span>
+                                )}
+
+                                {status === STATUS.PROGRESS && !show.isArchived && (
+                                  <span className="flex items-center gap-1 px-3 py-1 bg-blue-700 rounded-full text-xs font-bold text-white">
+                                    In Progress
+                                  </span>
+                                )}
+
                                 {hasRewatches && (
                                   <span className="flex items-center gap-1 px-2 py-1 bg-blue-600 rounded-full text-xs font-bold">
                                     <RotateCcw className="w-3 h-3" />
@@ -1721,6 +2235,7 @@ export default function TVShowTracker() {
                                   </span>
                                 )}
                               </div>
+
                               <p className="text-sm text-slate-400">
                                 {(show.genres || []).join(", ")} • {show.premiered?.slice(0, 4) || ""}
                               </p>
@@ -1730,6 +2245,8 @@ export default function TVShowTracker() {
                                   value={show.rating || 0}
                                   onChange={(n) => setShowRating(show.id, n)}
                                   onClear={() => setShowRating(show.id, 0)}
+                                  disabled={!isPaid}
+                                  disabledHint="Upgrade to rate shows"
                                 />
                               </div>
                             </div>
@@ -1748,9 +2265,7 @@ export default function TVShowTracker() {
                               <span className="text-sm text-slate-400">Viewing:</span>
                               <select
                                 value={show.currentRewatch || 1}
-                                onChange={(e) =>
-                                  switchToWatch(show.id, parseInt(e.target.value))
-                                }
+                                onChange={(e) => switchToWatch(show.id, parseInt(e.target.value))}
                                 className="px-3 py-1 bg-slate-700 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                               >
                                 <option value={1}>First Watch</option>
@@ -1763,7 +2278,8 @@ export default function TVShowTracker() {
                             </div>
                           )}
 
-                          <div className="mb-3">
+                          {/* Progress (current view) */}
+                          <div className="mb-2">
                             <div className="flex justify-between text-sm text-slate-400 mb-1">
                               <span>
                                 Progress{" "}
@@ -1783,6 +2299,12 @@ export default function TVShowTracker() {
                             </div>
                           </div>
 
+                          {/* First watch status basis */}
+                          <div className="mb-3 text-xs text-slate-400">
+                            Status is based on <span className="text-slate-200 font-semibold">First Watch</span>:{" "}
+                            {first.watched}/{first.total} ({firstPct}%)
+                          </div>
+
                           <div className="mb-3">
                             <label className="text-sm text-slate-400 mb-1 block">Watching on:</label>
                             <input
@@ -1795,24 +2317,76 @@ export default function TVShowTracker() {
 
                           <div className="flex gap-2 flex-wrap">
                             <button
-                              onClick={() => setExpandedShow(isExpanded ? null : show.id)}
+                              onClick={async () => {
+                                if (!isExpanded) {
+                                  // On expand, opportunistically refresh episodes (adds new ones + downgrades if needed)
+                                  await refreshEpisodesForShow(show.id);
+                                }
+                                setExpandedShow(isExpanded ? null : show.id);
+                              }}
                               className="flex items-center gap-2 text-purple-400 hover:text-purple-300"
                             >
-                              {isExpanded ? (
-                                <ChevronDown className="w-4 h-4" />
-                              ) : (
-                                <ChevronRight className="w-4 h-4" />
-                              )}
+                              {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                               {isExpanded ? "Hide" : "Show"} Seasons & Episodes
                             </button>
 
-                            {pct === 100 && (
+                            <button
+                              onClick={() => refreshEpisodesForShow(show.id)}
+                              className="flex items-center gap-2 px-3 py-1 bg-slate-700 hover:bg-slate-600 rounded text-sm"
+                              title="Refresh episodes (pull new episodes if any)"
+                              disabled={!navigator.onLine}
+                            >
+                              <RefreshCcw className="w-4 h-4" />
+                              Refresh
+                            </button>
+
+                            {!show.isArchived ? (
+                              <button
+                                onClick={() => setShowArchived(show.id, true)}
+                                className="flex items-center gap-2 px-3 py-1 bg-slate-700 hover:bg-slate-600 rounded text-sm"
+                                title="Archive this show"
+                              >
+                                <Archive className="w-4 h-4" />
+                                Archive
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => setShowArchived(show.id, false)}
+                                className="flex items-center gap-2 px-3 py-1 bg-slate-700 hover:bg-slate-600 rounded text-sm"
+                                title="Restore from archive"
+                              >
+                                <ArchiveRestore className="w-4 h-4" />
+                                Restore
+                              </button>
+                            )}
+
+                            <button
+                              onClick={() => resetFirstWatchProgress(show.id)}
+                              className="flex items-center gap-2 px-3 py-1 bg-slate-700 hover:bg-slate-600 rounded text-sm"
+                              title="Reset First Watch progress (unwatch all)"
+                            >
+                              <RotateCcw className="w-4 h-4" />
+                              Reset First Watch
+                            </button>
+
+                            {status !== STATUS.DONE && !show.isArchived && (
+                              <button
+                                onClick={() => markShowCompletedFirstWatch(show.id)}
+                                className="flex items-center gap-2 px-3 py-1 bg-green-600 hover:bg-green-700 rounded text-sm"
+                                title="Mark show completed (first watch)"
+                              >
+                                <CheckCircle className="w-4 h-4" />
+                                Complete
+                              </button>
+                            )}
+
+                            {status === STATUS.DONE && !show.isArchived && (
                               <button
                                 onClick={() => startRewatch(show.id)}
                                 className="flex items-center gap-2 px-3 py-1 bg-blue-600 hover:bg-blue-700 rounded text-sm"
                               >
                                 <RotateCcw className="w-4 h-4" />
-                                Re-watch this show
+                                Re-watch
                               </button>
                             )}
                           </div>
@@ -1837,15 +2411,9 @@ export default function TVShowTracker() {
                                       onClick={() => setExpandedSeason(isOpen ? null : sid)}
                                       className="flex items-center gap-2"
                                     >
-                                      {isOpen ? (
-                                        <ChevronDown className="w-4 h-4" />
-                                      ) : (
-                                        <ChevronRight className="w-4 h-4" />
-                                      )}
+                                      {isOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                                       <span className="font-semibold">Season {sNum}</span>
-                                      <span className="text-sm text-slate-300">
-                                        ({sp.watched}/{sp.total})
-                                      </span>
+                                      <span className="text-sm text-slate-300">({sp.watched}/{sp.total})</span>
                                       {done && (
                                         <span className="hidden md:inline-flex items-center gap-1 px-2 py-0.5 bg-green-600 rounded-full text-xs font-bold">
                                           <Check className="w-3 h-3" />
@@ -1882,9 +2450,7 @@ export default function TVShowTracker() {
                                           <button
                                             onClick={() => toggleEpisodeWatched(show.id, sNum, ep.id)}
                                             className={`w-6 h-6 rounded border-2 flex items-center justify-center transition-colors ${
-                                              ep.watched
-                                                ? "bg-purple-600 border-purple-600"
-                                                : "border-slate-400"
+                                              ep.watched ? "bg-purple-600 border-purple-600" : "border-slate-400"
                                             }`}
                                           >
                                             {ep.watched && <Check className="w-4 h-4" />}
@@ -1895,9 +2461,7 @@ export default function TVShowTracker() {
                                                 {ep.number}. {ep.name}
                                               </span>
                                             </div>
-                                            {ep.airdate && (
-                                              <span className="text-xs text-slate-300">{ep.airdate}</span>
-                                            )}
+                                            {ep.airdate && <span className="text-xs text-slate-300">{ep.airdate}</span>}
                                           </div>
                                         </div>
                                       ))}
@@ -1920,7 +2484,7 @@ export default function TVShowTracker() {
           <p className="mb-1">
             <strong>Your data saves automatically.</strong>
           </p>
-          <p>Re-watch completed shows, mark seasons complete, sort your collection.</p>
+          <p>Want to Watch → In Progress → Completed. Archive older shows. Re-watch completed series.</p>
         </div>
       </div>
     </div>
