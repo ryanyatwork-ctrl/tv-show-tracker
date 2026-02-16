@@ -29,33 +29,30 @@ import { getSupabase } from "./lib/supabase";
  * - Progress bar switches purple->green at 100%
  * - Hamburger menu with Import/Export + Donate + Account (Google/email magic link)
  *
- * Adds:
- * - Per-show rating (1–5 stars, 0 = unrated) persisted with library
- * - Recommendations panel based on 4–5★ genres (TVMaze-based + cached)
- * - Cloud sync controls: Sync Now (push), Pull from Cloud
- * - Last sync time display
- * - Conflict detection + resolution (Cloud wins / This device wins / Merge)
+ * Paid:
+ * - Recommendations are paid-only
+ * - Paid entitlement is read from Supabase table: public.tvtracker_profiles (user_id, is_paid)
  */
 
-// ---------- Monetization (stub until Play Billing is added) ----------
-const PAID_KEY = "tvtracker.isPaid.v1";
-function loadIsPaid() {
-  try {
-    return localStorage.getItem(PAID_KEY) === "true";
-  } catch {
-    return false;
-  }
+// -----------------------------
+// Alpha jump + article-agnostic sorting
+// -----------------------------
+function normalizeTitleForSort(title) {
+  if (!title) return "";
+  return title
+    .toString()
+    .trim()
+    .replace(/^(the|a|an)\s+/i, "")
+    .toLowerCase();
 }
-function persistIsPaid(v) {
-  try {
-    localStorage.setItem(PAID_KEY, v ? "true" : "false");
-  } catch {
-    /* ignore */
-  }
+function alphaGroupKey(title) {
+  const normalized = normalizeTitleForSort(title);
+  const first = (normalized[0] || "").toUpperCase();
+  return first >= "A" && first <= "Z" ? first : "#";
 }
 
 // ---------- UI preferences persistence (sort/filter) ----------
-const UI_PREFS_KEY = "tvtracker.uiPrefs.v1";
+const UI_PREFS_KEY = "tvtracker.uiPrefs.v2";
 function loadUIPrefs() {
   try {
     const raw = localStorage.getItem(UI_PREFS_KEY);
@@ -106,7 +103,6 @@ function saveRecsCache(isPaid, items) {
 // ---------- Sync meta ----------
 const SYNC_META_KEY = "tvtracker.syncMeta.v1";
 function randomId() {
-  // simple device id; good enough for client-side conflict detection
   return (
     "dev_" +
     Math.random().toString(16).slice(2) +
@@ -175,9 +171,6 @@ function normalizeLibrary(list) {
   return list.map(normalizeShow);
 }
 function unwrapRemoteData(remoteData) {
-  // Backward compatible:
-  // old: data = [shows...]
-  // new: data = { v:2, updatedAt, deviceId, shows:[...] }
   if (Array.isArray(remoteData)) {
     return { shows: normalizeLibrary(remoteData), updatedAt: 0, deviceId: "" };
   }
@@ -188,7 +181,8 @@ function unwrapRemoteData(remoteData) {
   ) {
     return {
       shows: normalizeLibrary(remoteData.shows),
-      updatedAt: typeof remoteData.updatedAt === "number" ? remoteData.updatedAt : 0,
+      updatedAt:
+        typeof remoteData.updatedAt === "number" ? remoteData.updatedAt : 0,
       deviceId: typeof remoteData.deviceId === "string" ? remoteData.deviceId : "",
     };
   }
@@ -218,9 +212,7 @@ function Stars({ value, onChange, onClear, size = "text-lg" }) {
               active ? "text-yellow-400" : "text-slate-500"
             } hover:text-yellow-300 transition-colors`}
             aria-label={`${n} star${n === 1 ? "" : "s"}`}
-            title={
-              n === 1 ? "Didn't like it" : n === 5 ? "Loved it" : `${n} stars`
-            }
+            title={n === 1 ? "Didn't like it" : n === 5 ? "Loved it" : `${n} stars`}
           >
             ★
           </button>
@@ -243,7 +235,7 @@ function Stars({ value, onChange, onClear, size = "text-lg" }) {
   );
 }
 
-// ---------- Merge helper (simple but sane) ----------
+// ---------- Merge helper ----------
 function watchedCount(show) {
   try {
     const seasons = show?.seasons || {};
@@ -264,7 +256,6 @@ function mergeLibraries(localShows, remoteShows) {
       map.set(s.id, s);
     } else {
       const r = map.get(s.id);
-      // Prefer the one with more watched episodes; if tied, prefer the one with higher rating; else remote.
       const lw = watchedCount(s);
       const rw = watchedCount(r);
       if (lw > rw) map.set(s.id, s);
@@ -275,15 +266,7 @@ function mergeLibraries(localShows, remoteShows) {
 }
 
 export default function TVShowTracker() {
-  // Paid state (local stub)
-  const [isPaid, setIsPaid] = useState(loadIsPaid());
-  useEffect(() => {
-    persistIsPaid(isPaid);
-  }, [isPaid]);
-
   const syncMetaRef = useRef(loadSyncMeta());
-
-  // IMPORTANT: prevent pushing stale local data before first pull completes
   const hasPulledFromCloudRef = useRef(false);
 
   // ---------- Persistence (local) ----------
@@ -297,7 +280,6 @@ export default function TVShowTracker() {
   });
 
   useEffect(() => {
-    // Track local changes for conflict detection
     syncMetaRef.current =
       saveSyncMeta({ lastLocalChangeAt: Date.now() }) || syncMetaRef.current;
 
@@ -312,7 +294,6 @@ export default function TVShowTracker() {
   const [isSignedIn, setIsSignedIn] = useState(false);
   const [userEmail, setUserEmail] = useState("");
 
-  // sync status UI
   const [syncMsg, setSyncMsg] = useState("");
   const [syncBusy, setSyncBusy] = useState(false);
   const [lastPulledAt, setLastPulledAt] = useState(
@@ -322,23 +303,49 @@ export default function TVShowTracker() {
     syncMetaRef.current.lastPushedAt || 0
   );
 
-  // conflict UI
-  const [conflict, setConflict] = useState(null); // { remoteUpdatedAt, remoteDeviceId, localChangedAt, remoteCount, localCount }
+  const [conflict, setConflict] = useState(null);
 
-  // fetch/push guards
   const pullingRef = useRef(false);
   const pushingRef = useRef(false);
 
-  const getSessionUserId = async () => {
+  // ---------- Paid entitlement ----------
+  const [isPaid, setIsPaid] = useState(false);
+
+  const ensureProfileRow = async (userId) => {
     const sp = getSupabase();
-    if (!sp) return null;
-    const {
-      data: { session },
-    } = await sp.auth.getSession();
-    return session?.user?.id || null;
+    if (!sp || !userId) return;
+    try {
+      // Ensure a row exists (RLS policy must allow insert for own user_id)
+      await sp.from("tvtracker_profiles").upsert(
+        { user_id: userId },
+        { onConflict: "user_id" }
+      );
+    } catch {
+      // ignore
+    }
   };
 
-  // Pull cloud library (optionally detect conflicts)
+  const refreshPaidStatus = async (userId) => {
+    const sp = getSupabase();
+    if (!sp || !userId) {
+      setIsPaid(false);
+      return;
+    }
+    try {
+      await ensureProfileRow(userId);
+      const { data, error } = await sp
+        .from("tvtracker_profiles")
+        .select("is_paid")
+        .eq("user_id", userId)
+        .single();
+      if (error) throw error;
+      setIsPaid(!!data?.is_paid);
+    } catch {
+      setIsPaid(false);
+    }
+  };
+
+  // Pull cloud library
   const pullLibrary = async ({ allowOverwrite = true } = {}) => {
     if (pullingRef.current) return { ok: false, reason: "busy" };
     const sp = getSupabase();
@@ -367,7 +374,6 @@ export default function TVShowTracker() {
       const remoteUpdatedAt = remoteWrap.updatedAt || 0;
       const remoteDeviceId = remoteWrap.deviceId || "";
 
-      // record that we've seen remote updatedAt
       syncMetaRef.current =
         saveSyncMeta({ lastSeenRemoteUpdatedAt: remoteUpdatedAt }) ||
         syncMetaRef.current;
@@ -375,11 +381,6 @@ export default function TVShowTracker() {
       const localChangedAt = syncMetaRef.current.lastLocalChangeAt || 0;
       const lastPulled = syncMetaRef.current.lastPulledAt || 0;
 
-      // Conflict detection heuristic:
-      // - remote was updated after our last pull
-      // - AND local changed after our last pull
-      // - AND remote deviceId differs (to reduce false positives)
-      // + guard remoteUpdatedAt > 0 to avoid legacy/empty remote payload weirdness
       const looksLikeConflict =
         remoteUpdatedAt > 0 &&
         remoteUpdatedAt > lastPulled &&
@@ -399,13 +400,13 @@ export default function TVShowTracker() {
         return { ok: false, reason: "conflict", remoteShows };
       }
 
-      // No conflict: adopt remote if allowed
       if (allowOverwrite) {
         setMyShows(remoteShows);
       }
 
       hasPulledFromCloudRef.current = true;
-      const nextMeta = saveSyncMeta({ lastPulledAt: Date.now() }) || syncMetaRef.current;
+      const nextMeta =
+        saveSyncMeta({ lastPulledAt: Date.now() }) || syncMetaRef.current;
       syncMetaRef.current = nextMeta;
       setLastPulledAt(nextMeta.lastPulledAt);
       setSyncMsg("Pulled from cloud.");
@@ -427,7 +428,6 @@ export default function TVShowTracker() {
     const sp = getSupabase();
     if (!sp) return { ok: false, reason: "no-supabase" };
 
-    // block push until initial pull is complete
     if (!hasPulledFromCloudRef.current) {
       return { ok: false, reason: "not-pulled-yet" };
     }
@@ -446,7 +446,10 @@ export default function TVShowTracker() {
 
       await sp
         .from("tvtracker_library")
-        .upsert({ user_id: session.user.id, data: envelope }, { onConflict: "user_id" });
+        .upsert(
+          { user_id: session.user.id, data: envelope },
+          { onConflict: "user_id" }
+        );
 
       const nextMeta =
         saveSyncMeta({
@@ -477,10 +480,11 @@ export default function TVShowTracker() {
       const {
         data: { session },
       } = await sp.auth.getSession();
+
       if (session?.user) {
         setIsSignedIn(true);
         setUserEmail(session.user.email || "");
-        // Always pull first on sign-in; do not allow push until done
+        await refreshPaidStatus(session.user.id);
         await pullLibrary({ allowOverwrite: true });
       }
 
@@ -489,10 +493,12 @@ export default function TVShowTracker() {
         setIsSignedIn(signed);
         setUserEmail(signed ? (ses.user.email || "") : "");
         if (signed) {
+          await refreshPaidStatus(ses.user.id);
           await pullLibrary({ allowOverwrite: true });
         } else {
           hasPulledFromCloudRef.current = false;
           setConflict(null);
+          setIsPaid(false);
         }
       });
     })();
@@ -503,9 +509,7 @@ export default function TVShowTracker() {
   useEffect(() => {
     if (!isSignedIn) return;
     if (!hasPulledFromCloudRef.current) return;
-    // If there's an unresolved conflict, don't auto-push.
     if (conflict) return;
-
     pushLibrary(myShows);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSignedIn, myShows, conflict]);
@@ -516,7 +520,6 @@ export default function TVShowTracker() {
   const [emailSending, setEmailSending] = useState(false);
   const [emailMsg, setEmailMsg] = useState("");
 
-  // --- Auth handlers ---
   const signInWithEmailMagicLink = async () => {
     setEmailMsg("");
     const email = emailInput.trim();
@@ -632,7 +635,9 @@ export default function TVShowTracker() {
     const arr = [...shows];
     switch (sortBy) {
       case "title":
-        arr.sort((a, b) => a.name.localeCompare(b.name));
+        arr.sort((a, b) =>
+          normalizeTitleForSort(a.name).localeCompare(normalizeTitleForSort(b.name))
+        );
         break;
       case "year":
         arr.sort((a, b) => {
@@ -664,7 +669,6 @@ export default function TVShowTracker() {
   const [recsLoading, setRecsLoading] = useState(false);
   const [recsMsg, setRecsMsg] = useState("");
 
-  // If user buys later, allow loading cache immediately
   useEffect(() => {
     if (isPaid) {
       const cached = loadRecsCache(true);
@@ -760,9 +764,7 @@ export default function TVShowTracker() {
 
       setRecs(sorted);
       saveRecsCache(isPaid, sorted);
-      setRecsMsg(
-        sorted.length ? "" : "No recommendations found. Try rating more shows 4★–5★."
-      );
+      setRecsMsg(sorted.length ? "" : "No recommendations found. Try rating more shows 4★–5★.");
     } catch (e) {
       console.warn("fetchRecommendations failed:", e?.message || e);
       setRecsMsg("Could not fetch recommendations right now.");
@@ -1086,6 +1088,22 @@ export default function TVShowTracker() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [myShows, filterStatus, sortBy]);
 
+  // ---------- Alpha jump dropdown ----------
+  const letterRefs = useRef({});
+  const alphaOptions = useMemo(() => {
+    if (sortBy !== "title") return [];
+    const set = new Set();
+    for (const s of visibleShows) set.add(alphaGroupKey(s?.name || ""));
+    const base = Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i));
+    base.push("#");
+    return base.filter((l) => set.has(l));
+  }, [visibleShows, sortBy]);
+
+  const jumpToLetter = (letter) => {
+    const el = letterRefs.current[letter];
+    if (el?.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
   // ---------- Menu sync actions ----------
   const pullFromCloudNow = async () => {
     if (!isSignedIn) {
@@ -1102,7 +1120,6 @@ export default function TVShowTracker() {
       setTimeout(() => setSyncMsg(""), 2500);
       return;
     }
-    // Ensure we have pulled at least once to avoid overwriting remote with stale local
     if (!hasPulledFromCloudRef.current) {
       const res = await pullLibrary({ allowOverwrite: true });
       if (!res?.ok) return;
@@ -1121,7 +1138,6 @@ export default function TVShowTracker() {
   };
 
   const resolveUseThisDevice = async () => {
-    // Mark pulled so push is allowed, then push
     hasPulledFromCloudRef.current = true;
     setConflict(null);
     await pushLibrary(myShows);
@@ -1137,7 +1153,6 @@ export default function TVShowTracker() {
       await pushLibrary(merged);
       return;
     }
-    // If no conflict was returned (or already resolved), just do a normal push after pull
     hasPulledFromCloudRef.current = true;
     setConflict(null);
     await pushLibrary(myShows);
@@ -1174,7 +1189,7 @@ export default function TVShowTracker() {
               </button>
 
               {menuOpen && (
-                <div className="absolute right-0 mt-2 w-80 rounded-xl border border-slate-700 bg-slate-800 shadow-xl overflow-hidden z-50">
+                <div className="absolute right-0 mt-2 w-96 max-w-[90vw] rounded-xl border border-slate-700 bg-slate-800 shadow-xl overflow-hidden z-50">
                   {/* Account */}
                   <div className="px-3 py-2 text-xs text-slate-400 border-b border-slate-700">
                     Account
@@ -1309,6 +1324,119 @@ export default function TVShowTracker() {
                     )}
                   </div>
 
+                  {/* Recommendations */}
+                  <div className="px-3 py-2 text-xs text-slate-400 border-b border-slate-700">
+                    Recommendations
+                  </div>
+
+                  <div className="px-4 py-3 border-b border-slate-700">
+                    {!isPaid ? (
+                      <div className="text-sm text-slate-300">
+                        <div className="font-semibold text-slate-200 mb-1">Paid feature</div>
+                        Unlock Recommendations with the $1.99 one-time purchase.
+                        <div className="mt-3">
+                          <button
+                            onClick={() => alert("Hook this to Stripe Checkout. Webhook sets tvtracker_profiles.is_paid = true.")}
+                            className="w-full rounded bg-purple-600 hover:bg-purple-700 px-3 py-2 text-sm font-medium"
+                          >
+                            Unlock ($1.99)
+                          </button>
+                        </div>
+                        <div className="mt-2 text-xs text-slate-400">
+                          (After purchase, your account is marked paid in Supabase.)
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="text-xs text-slate-300">
+                          Based on your 4–5★ shows{" "}
+                          {lovedGenreProfile.topGenres.length
+                            ? `(top genres: ${lovedGenreProfile.topGenres.join(", ")})`
+                            : ""}
+                        </div>
+
+                        <div className="mt-3 flex gap-2">
+                          <button
+                            onClick={fetchRecommendations}
+                            disabled={recsLoading}
+                            className="flex-1 px-3 py-2 rounded bg-purple-600 hover:bg-purple-700 disabled:opacity-50 font-semibold text-sm"
+                          >
+                            {recsLoading ? "Generating…" : "Generate"}
+                          </button>
+                          <button
+                            onClick={() => {
+                              setRecs([]);
+                              saveRecsCache(isPaid, []);
+                              setRecsMsg("");
+                            }}
+                            className="px-3 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm"
+                          >
+                            Clear
+                          </button>
+                        </div>
+
+                        {recsMsg && (
+                          <div className="mt-3 text-sm text-slate-300">{recsMsg}</div>
+                        )}
+
+                        {recs.length > 0 && (
+                          <div className="mt-4 space-y-2 max-h-80 overflow-y-auto pr-1">
+                            {recs.map((r) => (
+                              <div
+                                key={r.id}
+                                className="bg-slate-700 rounded-lg p-3 border border-slate-600"
+                              >
+                                <div className="flex gap-3">
+                                  {r.image ? (
+                                    <img
+                                      src={r.image}
+                                      alt={r.name}
+                                      className="w-12 h-16 object-cover rounded"
+                                    />
+                                  ) : (
+                                    <div className="w-12 h-16 rounded bg-slate-600 flex items-center justify-center text-slate-300">
+                                      <Tv className="w-5 h-5" />
+                                    </div>
+                                  )}
+                                  <div className="flex-1">
+                                    <div className="font-semibold text-sm">{r.name}</div>
+                                    <div className="text-xs text-slate-300 mt-1">
+                                      {r.premiered ? r.premiered.slice(0, 4) : ""}{" "}
+                                      {r.genres?.length ? `• ${r.genres.join(", ")}` : ""}
+                                    </div>
+                                    <div className="mt-2 flex gap-2 items-center">
+                                      <button
+                                        onClick={() =>
+                                          addShow(
+                                            {
+                                              id: r.id,
+                                              name: r.name,
+                                              image: r.image
+                                                ? { medium: r.image, original: r.image }
+                                                : undefined,
+                                            },
+                                            false
+                                          )
+                                        }
+                                        disabled={isShowAdded(r.id)}
+                                        className="px-3 py-1.5 rounded bg-green-600 hover:bg-green-700 disabled:opacity-50 text-xs font-semibold"
+                                      >
+                                        {isShowAdded(r.id) ? "Added" : "Add"}
+                                      </button>
+                                      <span className="text-[11px] text-slate-400" title="Relevance score">
+                                        score {r.score}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+
                   {/* Data */}
                   <div className="px-3 py-2 text-xs text-slate-400 border-b border-slate-700">
                     Data
@@ -1360,19 +1488,6 @@ export default function TVShowTracker() {
                     <DollarSign className="w-4 h-4" />
                     Donate via Venmo
                   </a>
-
-                  {/* Simple dev toggle for paid (remove later) */}
-                  <div className="px-4 py-3 border-t border-slate-700">
-                    <div className="text-xs text-slate-400 mb-2">
-                      Dev: Paid unlock (temporary)
-                    </div>
-                    <button
-                      onClick={() => setIsPaid((v) => !v)}
-                      className="w-full rounded bg-slate-700 hover:bg-slate-600 px-3 py-2 text-sm"
-                    >
-                      {isPaid ? "Set to FREE" : "Set to PAID"}
-                    </button>
-                  </div>
                 </div>
               )}
             </div>
@@ -1382,121 +1497,8 @@ export default function TVShowTracker() {
         <p className="text-slate-300 mt-2">Never lose track of what you're watching</p>
       </header>
 
-      {/* RECOMMENDATIONS */}
-      <div className="mb-8 bg-slate-800 rounded-lg p-6 shadow-xl">
-        {!isPaid ? (
-          <>
-            <h2 className="text-xl font-semibold flex items-center gap-2">
-              <span className="text-yellow-300">★</span> Recommendations (Paid)
-            </h2>
-            <p className="text-sm text-slate-300 mt-2">
-              Unlock Recommendations with the $1.99 one-time purchase.
-            </p>
-          </>
-        ) : (
-          <>
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h2 className="text-xl font-semibold flex items-center gap-2">
-                  <span className="text-yellow-300">★</span> Recommendations
-                </h2>
-                <p className="text-sm text-slate-300 mt-1">
-                  Based on your 4–5★ shows{" "}
-                  {lovedGenreProfile.topGenres.length
-                    ? `(top genres: ${lovedGenreProfile.topGenres.join(", ")})`
-                    : ""}
-                </p>
-              </div>
-
-              <div className="flex gap-2">
-                <button
-                  onClick={fetchRecommendations}
-                  disabled={recsLoading}
-                  className="px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 disabled:opacity-50 font-semibold"
-                >
-                  {recsLoading ? "Generating…" : "Generate"}
-                </button>
-                <button
-                  onClick={() => {
-                    setRecs([]);
-                    saveRecsCache(isPaid, []);
-                    setRecsMsg("");
-                  }}
-                  className="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600"
-                >
-                  Clear
-                </button>
-              </div>
-            </div>
-
-            {recsMsg && <div className="mt-3 text-sm text-slate-300">{recsMsg}</div>}
-
-            {!recsMsg && lovedGenreProfile.lovedCount === 0 && (
-              <div className="mt-3 text-sm text-slate-300">
-                Rate a show 4★ or 5★ and hit <strong>Generate</strong>.
-              </div>
-            )}
-
-            {recs.length > 0 && (
-              <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
-                {recs.map((r) => (
-                  <div
-                    key={r.id}
-                    className="bg-slate-700 rounded-lg p-4 border border-slate-600"
-                  >
-                    <div className="flex gap-3">
-                      {r.image ? (
-                        <img
-                          src={r.image}
-                          alt={r.name}
-                          className="w-16 h-24 object-cover rounded"
-                        />
-                      ) : (
-                        <div className="w-16 h-24 rounded bg-slate-600 flex items-center justify-center text-slate-300">
-                          <Tv className="w-6 h-6" />
-                        </div>
-                      )}
-                      <div className="flex-1">
-                        <div className="font-semibold">{r.name}</div>
-                        <div className="text-xs text-slate-300 mt-1">
-                          {r.premiered ? r.premiered.slice(0, 4) : ""}{" "}
-                          {r.genres?.length ? `• ${r.genres.join(", ")}` : ""}
-                        </div>
-                        <div className="mt-3 flex gap-2 items-center">
-                          <button
-                            onClick={() =>
-                              addShow(
-                                {
-                                  id: r.id,
-                                  name: r.name,
-                                  image: r.image
-                                    ? { medium: r.image, original: r.image }
-                                    : undefined,
-                                },
-                                false
-                              )
-                            }
-                            disabled={isShowAdded(r.id)}
-                            className="px-3 py-2 rounded bg-green-600 hover:bg-green-700 disabled:opacity-50 text-sm font-semibold"
-                          >
-                            {isShowAdded(r.id) ? "Added" : "Add"}
-                          </button>
-                          <span className="text-xs text-slate-400" title="Relevance score">
-                            score {r.score}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </>
-        )}
-      </div>
-
-      {/* SEARCH / ADD */}
-      <div className="mb-8 bg-slate-800 rounded-lg p-6 shadow-xl">
+      {/* SEARCH / ADD (constrained width) */}
+      <div className="mb-8 bg-slate-800 rounded-lg p-6 shadow-xl max-w-3xl mx-auto">
         <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
           <Plus className="w-5 h-5 text-purple-400" />
           Add New Series
@@ -1596,10 +1598,39 @@ export default function TVShowTracker() {
         )}
       </div>
 
-      {/* SORT / FILTER */}
+      {/* SORT / FILTER + ALPHA JUMP */}
       {myShows.length > 0 && (
-        <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-          <h2 className="text-2xl font-semibold">My Shows ({getSortedShows(myShows).length})</h2>
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-4 max-w-6xl mx-auto">
+          <div className="flex items-center gap-3 flex-wrap">
+            <h2 className="text-2xl font-semibold">
+              My Shows ({getSortedShows(myShows).length})
+            </h2>
+
+            {sortBy === "title" && alphaOptions.length > 0 && (
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-slate-300">Jump:</span>
+                <select
+                  className="px-3 py-2 bg-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 text-sm"
+                  defaultValue=""
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (!val) return;
+                    jumpToLetter(val);
+                    e.target.value = "";
+                  }}
+                  title="Jump to letter"
+                >
+                  <option value="">Select…</option>
+                  {alphaOptions.map((l) => (
+                    <option key={l} value={l}>
+                      {l}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+
           <div className="flex gap-3">
             <select
               value={sortBy}
@@ -1625,256 +1656,272 @@ export default function TVShowTracker() {
       )}
 
       {/* SHOWS GRID */}
-      {visibleShows.length === 0 ? (
-        <div className="text-center py-12 bg-slate-800 rounded-lg">
-          <Tv className="w-16 h-16 mx-auto mb-4 text-slate-600" />
-          <p className="text-slate-400">
-            {myShows.length ? "No shows match the current filters." : "No shows yet. Add your first above!"}
-          </p>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {visibleShows.map((show) => {
-            const { seasons } = getCurrentWatchData(show);
-            const progress = getWatchProgress(show);
-            const pct = progress.percentage;
-            const isExpanded = expandedShow === show.id;
-            const hasRewatches = (show.rewatches?.length || 0) > 0;
+      <div className="max-w-6xl mx-auto">
+        {visibleShows.length === 0 ? (
+          <div className="text-center py-12 bg-slate-800 rounded-lg">
+            <Tv className="w-16 h-16 mx-auto mb-4 text-slate-600" />
+            <p className="text-slate-400">
+              {myShows.length ? "No shows match the current filters." : "No shows yet. Add your first above!"}
+            </p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {visibleShows.map((show, idx) => {
+              const { seasons } = getCurrentWatchData(show);
+              const progress = getWatchProgress(show);
+              const pct = progress.percentage;
+              const isExpanded = expandedShow === show.id;
+              const hasRewatches = (show.rewatches?.length || 0) > 0;
 
-            return (
-              <article
-                key={show.id}
-                className={`bg-zinc-900 rounded-lg overflow-hidden border border-zinc-800 ${
-                  pct === 100 ? "ring-2 ring-green-500/50 shadow-green-500/20" : ""
-                }`}
-              >
-                <div className="p-4">
-                  <div className="flex items-start gap-4">
-                    {show.image && (
-                      <img
-                        src={show.image}
-                        alt={show.name}
-                        className="w-20 h-28 object-cover rounded"
-                      />
-                    )}
-                    <div className="flex-1">
-                      <div className="flex items-start justify-between mb-2">
-                        <div>
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <h3 className="text-xl font-semibold">{show.name}</h3>
-                            {pct === 100 && (
-                              <span className="flex items-center gap-1 px-3 py-1 bg-gradient-to-r from-green-500 to-emerald-500 rounded-full text-xs font-bold text-white shadow-lg">
-                                <Check className="w-4 h-4" />
-                                COMPLETED
-                              </span>
-                            )}
-                            {hasRewatches && (
-                              <span className="flex items-center gap-1 px-2 py-1 bg-blue-600 rounded-full text-xs font-bold">
-                                <RotateCcw className="w-3 h-3" />
-                                {show.rewatches.length} rewatch{show.rewatches.length > 1 ? "es" : ""}
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-sm text-slate-400">
-                            {(show.genres || []).join(", ")} • {show.premiered?.slice(0, 4) || ""}
-                          </p>
+              const prev = idx > 0 ? visibleShows[idx - 1] : null;
+              const thisLetter = sortBy === "title" ? alphaGroupKey(show.name) : null;
+              const prevLetter = sortBy === "title" && prev ? alphaGroupKey(prev.name) : null;
+              const showLetterAnchor = sortBy === "title" && thisLetter && thisLetter !== prevLetter;
 
-                          <div className="mt-2">
-                            <Stars
-                              value={show.rating || 0}
-                              onChange={(n) => setShowRating(show.id, n)}
-                              onClear={() => setShowRating(show.id, 0)}
-                              onChangeCapture={() => {}}
-                            />
-                          </div>
-                        </div>
+              return (
+                <React.Fragment key={show.id}>
+                  {showLetterAnchor && (
+                    <div
+                      ref={(el) => {
+                        if (el) letterRefs.current[thisLetter] = el;
+                      }}
+                      className="col-span-full h-0"
+                    />
+                  )}
 
-                        <button
-                          onClick={() => removeShow(show.id)}
-                          className="text-red-400 hover:text-red-300 p-2"
-                          title="Remove show"
-                        >
-                          <Trash2 className="w-5 h-5" />
-                        </button>
-                      </div>
-
-                      {hasRewatches && (
-                        <div className="mb-3 flex items-center gap-2">
-                          <span className="text-sm text-slate-400">Viewing:</span>
-                          <select
-                            value={show.currentRewatch || 1}
-                            onChange={(e) =>
-                              switchToWatch(show.id, parseInt(e.target.value))
-                            }
-                            className="px-3 py-1 bg-slate-700 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                          >
-                            <option value={1}>First Watch</option>
-                            {show.rewatches.map((rw) => (
-                              <option key={rw.watchNumber} value={rw.watchNumber}>
-                                Watch #{rw.watchNumber}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      )}
-
-                      <div className="mb-3">
-                        <div className="flex justify-between text-sm text-slate-400 mb-1">
-                          <span>
-                            Progress{" "}
-                            {show.currentRewatch > 1 ? `(Watch #${show.currentRewatch})` : ""}
-                          </span>
-                          <span>
-                            {progress.watched} / {progress.total} episodes ({pct}%)
-                          </span>
-                        </div>
-                        <div className="w-full bg-slate-700 rounded-full h-2">
-                          <div
-                            className={`h-2 rounded transition-[width,background-color] duration-300 ${
-                              pct === 100 ? "bg-green-600" : "bg-purple-600"
-                            }`}
-                            style={{ width: `${pct}%` }}
+                  <article
+                    className={`bg-zinc-900 rounded-lg overflow-hidden border border-zinc-800 ${
+                      pct === 100 ? "ring-2 ring-green-500/50 shadow-green-500/20" : ""
+                    }`}
+                  >
+                    <div className="p-4">
+                      <div className="flex items-start gap-4">
+                        {show.image && (
+                          <img
+                            src={show.image}
+                            alt={show.name}
+                            className="w-20 h-28 object-cover rounded"
                           />
-                        </div>
-                      </div>
-
-                      <div className="mb-3">
-                        <label className="text-sm text-slate-400 mb-1 block">Watching on:</label>
-                        <input
-                          value={show.source}
-                          onChange={(e) => updateSource(show.id, e.target.value)}
-                          placeholder="Netflix, DVD, etc."
-                          className="w-full px-3 py-2 bg-slate-700 rounded focus:outline-none focus:ring-2 focus:ring-purple-500"
-                        />
-                      </div>
-
-                      <div className="flex gap-2 flex-wrap">
-                        <button
-                          onClick={() => setExpandedShow(isExpanded ? null : show.id)}
-                          className="flex items-center gap-2 text-purple-400 hover:text-purple-300"
-                        >
-                          {isExpanded ? (
-                            <ChevronDown className="w-4 h-4" />
-                          ) : (
-                            <ChevronRight className="w-4 h-4" />
-                          )}
-                          {isExpanded ? "Hide" : "Show"} Seasons & Episodes
-                        </button>
-
-                        {pct === 100 && (
-                          <button
-                            onClick={() => startRewatch(show.id)}
-                            className="flex items-center gap-2 px-3 py-1 bg-blue-600 hover:bg-blue-700 rounded text-sm"
-                          >
-                            <RotateCcw className="w-4 h-4" />
-                            Re-watch this show
-                          </button>
                         )}
-                      </div>
-                    </div>
-                  </div>
-
-                  {isExpanded && (
-                    <div className="mt-4 space-y-3">
-                      {Object.keys(seasons)
-                        .sort((a, b) => Number(a) - Number(b))
-                        .map((sNum) => {
-                          const eps = seasons[sNum] || [];
-                          const sp = getSeasonProgress(eps);
-                          const sid = `${show.id}-${sNum}`;
-                          const isOpen = expandedSeason === sid;
-                          const done = sp.watched === sp.total && sp.total > 0;
-
-                          return (
-                            <div key={sNum} className="bg-slate-700 rounded-lg p-4">
-                              <div className="flex items-center justify-between mb-2">
-                                <button
-                                  onClick={() => setExpandedSeason(isOpen ? null : sid)}
-                                  className="flex items-center gap-2"
-                                >
-                                  {isOpen ? (
-                                    <ChevronDown className="w-4 h-4" />
-                                  ) : (
-                                    <ChevronRight className="w-4 h-4" />
-                                  )}
-                                  <span className="font-semibold">Season {sNum}</span>
-                                  <span className="text-sm text-slate-300">
-                                    ({sp.watched}/{sp.total})
+                        <div className="flex-1">
+                          <div className="flex items-start justify-between mb-2">
+                            <div>
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <h3 className="text-xl font-semibold">{show.name}</h3>
+                                {pct === 100 && (
+                                  <span className="flex items-center gap-1 px-3 py-1 bg-gradient-to-r from-green-500 to-emerald-500 rounded-full text-xs font-bold text-white shadow-lg">
+                                    <Check className="w-4 h-4" />
+                                    COMPLETED
                                   </span>
-                                  {done && (
-                                    <span className="hidden md:inline-flex items-center gap-1 px-2 py-0.5 bg-green-600 rounded-full text-xs font-bold">
-                                      <Check className="w-3 h-3" />
-                                      Complete
-                                    </span>
-                                  )}
-                                </button>
-
-                                {!done ? (
-                                  <button
-                                    onClick={() => markSeasonComplete(show.id, sNum, true)}
-                                    className="flex items-center gap-1 px-3 py-1 bg-green-600 hover:bg-green-700 rounded text-xs"
-                                  >
-                                    <CheckCircle className="w-3 h-3" />
-                                    Mark Complete
-                                  </button>
-                                ) : (
-                                  <button
-                                    onClick={() => markSeasonComplete(show.id, sNum, false)}
-                                    className="flex items-center gap-1 px-3 py-1 bg-slate-600 hover:bg-slate-500 rounded text-xs"
-                                  >
-                                    Unmark All
-                                  </button>
+                                )}
+                                {hasRewatches && (
+                                  <span className="flex items-center gap-1 px-2 py-1 bg-blue-600 rounded-full text-xs font-bold">
+                                    <RotateCcw className="w-3 h-3" />
+                                    {show.rewatches.length} rewatch{show.rewatches.length > 1 ? "es" : ""}
+                                  </span>
                                 )}
                               </div>
+                              <p className="text-sm text-slate-400">
+                                {(show.genres || []).join(", ")} • {show.premiered?.slice(0, 4) || ""}
+                              </p>
 
-                              {isOpen && (
-                                <div className="space-y-2 mt-3">
-                                  {eps.map((ep) => (
-                                    <div
-                                      key={ep.id}
-                                      className="flex items-center gap-3 p-2 bg-slate-600 rounded hover:bg-slate-500 transition-colors"
-                                    >
-                                      <button
-                                        onClick={() => toggleEpisodeWatched(show.id, sNum, ep.id)}
-                                        className={`w-6 h-6 rounded border-2 flex items-center justify-center transition-colors ${
-                                          ep.watched
-                                            ? "bg-purple-600 border-purple-600"
-                                            : "border-slate-400"
-                                        }`}
-                                      >
-                                        {ep.watched && <Check className="w-4 h-4" />}
-                                      </button>
-                                      <div className="flex-1">
-                                        <div className="flex items-center gap-2">
-                                          <span className="font-medium">
-                                            {ep.number}. {ep.name}
-                                          </span>
-                                        </div>
-                                        {ep.airdate && (
-                                          <span className="text-xs text-slate-300">{ep.airdate}</span>
-                                        )}
-                                      </div>
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
+                              <div className="mt-2">
+                                <Stars
+                                  value={show.rating || 0}
+                                  onChange={(n) => setShowRating(show.id, n)}
+                                  onClear={() => setShowRating(show.id, 0)}
+                                />
+                              </div>
                             </div>
-                          );
-                        })}
-                    </div>
-                  )}
-                </div>
-              </article>
-            );
-          })}
-        </div>
-      )}
 
-      <div className="mt-8 text-center text-sm text-slate-300 bg-slate-800 rounded-lg p-4">
-        <p className="mb-1">
-          <strong>Your data saves automatically.</strong>
-        </p>
-        <p>Re-watch completed shows, mark seasons complete, sort your collection.</p>
+                            <button
+                              onClick={() => removeShow(show.id)}
+                              className="text-red-400 hover:text-red-300 p-2"
+                              title="Remove show"
+                            >
+                              <Trash2 className="w-5 h-5" />
+                            </button>
+                          </div>
+
+                          {hasRewatches && (
+                            <div className="mb-3 flex items-center gap-2">
+                              <span className="text-sm text-slate-400">Viewing:</span>
+                              <select
+                                value={show.currentRewatch || 1}
+                                onChange={(e) =>
+                                  switchToWatch(show.id, parseInt(e.target.value))
+                                }
+                                className="px-3 py-1 bg-slate-700 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              >
+                                <option value={1}>First Watch</option>
+                                {show.rewatches.map((rw) => (
+                                  <option key={rw.watchNumber} value={rw.watchNumber}>
+                                    Watch #{rw.watchNumber}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          )}
+
+                          <div className="mb-3">
+                            <div className="flex justify-between text-sm text-slate-400 mb-1">
+                              <span>
+                                Progress{" "}
+                                {show.currentRewatch > 1 ? `(Watch #${show.currentRewatch})` : ""}
+                              </span>
+                              <span>
+                                {progress.watched} / {progress.total} episodes ({pct}%)
+                              </span>
+                            </div>
+                            <div className="w-full bg-slate-700 rounded-full h-2">
+                              <div
+                                className={`h-2 rounded transition-[width,background-color] duration-300 ${
+                                  pct === 100 ? "bg-green-600" : "bg-purple-600"
+                                }`}
+                                style={{ width: `${pct}%` }}
+                              />
+                            </div>
+                          </div>
+
+                          <div className="mb-3">
+                            <label className="text-sm text-slate-400 mb-1 block">Watching on:</label>
+                            <input
+                              value={show.source}
+                              onChange={(e) => updateSource(show.id, e.target.value)}
+                              placeholder="Netflix, DVD, etc."
+                              className="w-full px-3 py-2 bg-slate-700 rounded focus:outline-none focus:ring-2 focus:ring-purple-500"
+                            />
+                          </div>
+
+                          <div className="flex gap-2 flex-wrap">
+                            <button
+                              onClick={() => setExpandedShow(isExpanded ? null : show.id)}
+                              className="flex items-center gap-2 text-purple-400 hover:text-purple-300"
+                            >
+                              {isExpanded ? (
+                                <ChevronDown className="w-4 h-4" />
+                              ) : (
+                                <ChevronRight className="w-4 h-4" />
+                              )}
+                              {isExpanded ? "Hide" : "Show"} Seasons & Episodes
+                            </button>
+
+                            {pct === 100 && (
+                              <button
+                                onClick={() => startRewatch(show.id)}
+                                className="flex items-center gap-2 px-3 py-1 bg-blue-600 hover:bg-blue-700 rounded text-sm"
+                              >
+                                <RotateCcw className="w-4 h-4" />
+                                Re-watch this show
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {isExpanded && (
+                        <div className="mt-4 space-y-3">
+                          {Object.keys(seasons)
+                            .sort((a, b) => Number(a) - Number(b))
+                            .map((sNum) => {
+                              const eps = seasons[sNum] || [];
+                              const sp = getSeasonProgress(eps);
+                              const sid = `${show.id}-${sNum}`;
+                              const isOpen = expandedSeason === sid;
+                              const done = sp.watched === sp.total && sp.total > 0;
+
+                              return (
+                                <div key={sNum} className="bg-slate-700 rounded-lg p-4">
+                                  <div className="flex items-center justify-between mb-2">
+                                    <button
+                                      onClick={() => setExpandedSeason(isOpen ? null : sid)}
+                                      className="flex items-center gap-2"
+                                    >
+                                      {isOpen ? (
+                                        <ChevronDown className="w-4 h-4" />
+                                      ) : (
+                                        <ChevronRight className="w-4 h-4" />
+                                      )}
+                                      <span className="font-semibold">Season {sNum}</span>
+                                      <span className="text-sm text-slate-300">
+                                        ({sp.watched}/{sp.total})
+                                      </span>
+                                      {done && (
+                                        <span className="hidden md:inline-flex items-center gap-1 px-2 py-0.5 bg-green-600 rounded-full text-xs font-bold">
+                                          <Check className="w-3 h-3" />
+                                          Complete
+                                        </span>
+                                      )}
+                                    </button>
+
+                                    {!done ? (
+                                      <button
+                                        onClick={() => markSeasonComplete(show.id, sNum, true)}
+                                        className="flex items-center gap-1 px-3 py-1 bg-green-600 hover:bg-green-700 rounded text-xs"
+                                      >
+                                        <CheckCircle className="w-3 h-3" />
+                                        Mark Complete
+                                      </button>
+                                    ) : (
+                                      <button
+                                        onClick={() => markSeasonComplete(show.id, sNum, false)}
+                                        className="flex items-center gap-1 px-3 py-1 bg-slate-600 hover:bg-slate-500 rounded text-xs"
+                                      >
+                                        Unmark All
+                                      </button>
+                                    )}
+                                  </div>
+
+                                  {isOpen && (
+                                    <div className="space-y-2 mt-3">
+                                      {eps.map((ep) => (
+                                        <div
+                                          key={ep.id}
+                                          className="flex items-center gap-3 p-2 bg-slate-600 rounded hover:bg-slate-500 transition-colors"
+                                        >
+                                          <button
+                                            onClick={() => toggleEpisodeWatched(show.id, sNum, ep.id)}
+                                            className={`w-6 h-6 rounded border-2 flex items-center justify-center transition-colors ${
+                                              ep.watched
+                                                ? "bg-purple-600 border-purple-600"
+                                                : "border-slate-400"
+                                            }`}
+                                          >
+                                            {ep.watched && <Check className="w-4 h-4" />}
+                                          </button>
+                                          <div className="flex-1">
+                                            <div className="flex items-center gap-2">
+                                              <span className="font-medium">
+                                                {ep.number}. {ep.name}
+                                              </span>
+                                            </div>
+                                            {ep.airdate && (
+                                              <span className="text-xs text-slate-300">{ep.airdate}</span>
+                                            )}
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                        </div>
+                      )}
+                    </div>
+                  </article>
+                </React.Fragment>
+              );
+            })}
+          </div>
+        )}
+
+        <div className="mt-8 text-center text-sm text-slate-300 bg-slate-800 rounded-lg p-4">
+          <p className="mb-1">
+            <strong>Your data saves automatically.</strong>
+          </p>
+          <p>Re-watch completed shows, mark seasons complete, sort your collection.</p>
+        </div>
       </div>
     </div>
   );
