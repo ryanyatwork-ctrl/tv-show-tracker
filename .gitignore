@@ -14,3 +14,5 @@ capacitor.config.json
 .env
 .env.*
 
+backup-TVShowTracker.jsx
+src/TVShowTracker.jsx.bak-*
