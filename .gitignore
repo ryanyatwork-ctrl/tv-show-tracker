@@ -6,3 +6,7 @@ build/
 android/
 ios/
 capacitor.config.json
+
+*.patch
+*.rej
+
