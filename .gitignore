@@ -10,3 +10,7 @@ capacitor.config.json
 *.patch
 *.rej
 
+
+.env
+.env.*
+
