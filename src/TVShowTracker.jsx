@@ -1,7 +1,9 @@
-﻿import React, { useEffect, useMemo, useRef, useState } from "react";
+﻿@'
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 const STORAGE_KEY = "tvtracker_shows_v1";
 
+// Ignore leading articles for sort/group
 function normalizeTitleForSort(title) {
   if (!title) return "";
   return title.trim().replace(/^(the|a|an)\s+/i, "").toLowerCase();
@@ -33,6 +35,7 @@ export default function TVShowTracker() {
 
   const sectionRefs = useRef({});
 
+  // load
   useEffect(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -40,13 +43,18 @@ export default function TVShowTracker() {
       const parsed = JSON.parse(raw);
       const arr = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.shows) ? parsed.shows : []);
       setShows(arr);
-    } catch {}
+    } catch {
+      // ignore
+    }
   }, []);
 
+  // save
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(shows));
-    } catch {}
+    } catch {
+      // ignore
+    }
   }, [shows]);
 
   const allGenres = useMemo(() => {
@@ -174,7 +182,7 @@ export default function TVShowTracker() {
         <h1 style={{ margin: 0, fontSize: 24 }}>TV Tracker</h1>
 
         <div style={styles.controls}>
-          <input style={styles.input} placeholder="Search (title or genre)" value={query} onChange={(e) => setQuery(e.target.value)} />
+          <input style={styles.input} placeholder="Search (title or genre)ΓÇª" value={query} onChange={(e) => setQuery(e.target.value)} />
 
           <select style={styles.select} value={genreFilter} onChange={(e) => setGenreFilter(e.target.value)}>
             <option value="All">All genres</option>
@@ -192,7 +200,7 @@ export default function TVShowTracker() {
         <div style={styles.controls}>
           <input
             style={styles.input}
-            placeholder="Add a show title"
+            placeholder="Add a show titleΓÇª"
             value={newTitle}
             onChange={(e) => setNewTitle(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") addShow(); }}
@@ -208,7 +216,7 @@ export default function TVShowTracker() {
 
         <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
           <div style={styles.muted}>
-            {visibleShows.length} show{visibleShows.length === 1 ? "" : "s"} shown{genreFilter !== "All" ? `  filtered to ${genreFilter}` : ""}
+            {visibleShows.length} show{visibleShows.length === 1 ? "" : "s"} shown{genreFilter !== "All" ? ` ΓÇó filtered to ${genreFilter}` : ""}
           </div>
 
           <div style={styles.alphaBar} aria-label="Alphabet jump">
@@ -230,7 +238,7 @@ export default function TVShowTracker() {
       {grouped.keys.length === 0 ? (
         <div style={{ ...styles.card, marginTop: 14 }}>
           <div style={{ fontWeight: 800 }}>No shows match your filters.</div>
-          <div style={styles.muted}>Clear search or set genre back to All.</div>
+          <div style={styles.muted}>Clear search or set genre back to ΓÇ£AllΓÇ¥.</div>
         </div>
       ) : (
         grouped.keys.map((letter) => {
@@ -271,3 +279,4 @@ export default function TVShowTracker() {
     </div>
   );
 }
+'@ | Set-Content -Encoding UTF8 .\src\TVShowTracker.jsx
