@@ -1,2 +1,2 @@
 # tv-show-tracker
-app to keep track of progress of shows you've watched
+An app to keep track of the shows you're watching
