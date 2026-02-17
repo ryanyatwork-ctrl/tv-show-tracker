@@ -61,6 +61,12 @@ import { getSupabase } from "./lib/supabase";
 const FREE_SHOW_LIMIT = 15;
 
 // -----------------------------
+// Stripe price IDs (your live prices)
+// -----------------------------
+const STRIPE_PRICE_MONTHLY = "price_1T1eHjPovynVraMaSGWjmOgp";
+const STRIPE_PRICE_YEARLY = "price_1T1eIRPovynVraMaWdu3MCLx";
+
+// -----------------------------
 // Status model
 // -----------------------------
 const STATUS = {
@@ -135,7 +141,10 @@ function loadRecsCache(isPaid) {
 function saveRecsCache(isPaid, items) {
   if (!isPaid) return;
   try {
-    localStorage.setItem(RECS_CACHE_KEY, JSON.stringify({ ts: Date.now(), items }));
+    localStorage.setItem(
+      RECS_CACHE_KEY,
+      JSON.stringify({ ts: Date.now(), items })
+    );
   } catch {
     /* ignore */
   }
@@ -236,8 +245,6 @@ function normalizeShow(s) {
 
   const status = valid ? base.status : inferStatusFromFirstWatch(base);
 
-  // If legacy had 100% progress but status not set, ensure completed
-  // (this also enforces your choice: completed => watched_episodes_count == total, which we simulate via status)
   return {
     ...base,
     status,
@@ -287,7 +294,15 @@ function Stars({ value, onChange, onClear, size = "text-lg", disabled = false, d
               active ? "text-yellow-400" : "text-slate-500"
             } ${disabled ? "opacity-50 cursor-not-allowed" : "hover:text-yellow-300"} transition-colors`}
             aria-label={`${n} star${n === 1 ? "" : "s"}`}
-            title={disabled ? disabledHint || "Paid feature" : n === 1 ? "Didn't like it" : n === 5 ? "Loved it" : `${n} stars`}
+            title={
+              disabled
+                ? disabledHint || "Paid feature"
+                : n === 1
+                ? "Didn't like it"
+                : n === 5
+                ? "Loved it"
+                : `${n} stars`
+            }
           >
             ★
           </button>
@@ -301,7 +316,9 @@ function Stars({ value, onChange, onClear, size = "text-lg", disabled = false, d
             if (disabled) return;
             onClear();
           }}
-          className={`ml-2 text-xs ${disabled ? "text-slate-500 cursor-not-allowed" : "text-slate-400 hover:text-slate-200 underline"}`}
+          className={`ml-2 text-xs ${
+            disabled ? "text-slate-500 cursor-not-allowed" : "text-slate-400 hover:text-slate-200 underline"
+          }`}
           title={disabled ? disabledHint || "Paid feature" : "Clear rating"}
         >
           Clear
@@ -319,8 +336,6 @@ function Stars({ value, onChange, onClear, size = "text-lg", disabled = false, d
 
 // ---------- Merge helper ----------
 function watchedCount(show) {
-  // keep legacy merge rule: total watched across seasons in CURRENT VIEW
-  // (still used only for conflict merges; it’s fine)
   try {
     const seasons = show?.seasons || {};
     let n = 0;
@@ -413,6 +428,9 @@ export default function TVShowTracker() {
   const [isPaid, setIsPaid] = useState(false);
   const [checkoutBusy, setCheckoutBusy] = useState(false);
 
+  // Plan picker modal
+  const [planModalOpen, setPlanModalOpen] = useState(false);
+
   const ensureProfileRow = async (userId) => {
     const sp = getSupabase();
     if (!sp || !userId) return;
@@ -443,40 +461,36 @@ export default function TVShowTracker() {
     }
   };
 
-  // Stripe checkout (Edge Function)
-  // Expected Edge function: create_tvtracker_checkout
-  // Returns: { url: "https://checkout.stripe.com/..." }
-  const startCheckout = async () => {
+  // Stripe checkout (Supabase Edge Function: create-checkout-session)
+  // Expected return: { url: "https://checkout.stripe.com/..." }
+  const startCheckout = async (plan = "monthly") => {
     if (!isSignedIn) {
       alert("Please sign in first so your purchase can attach to your account.");
       return;
     }
+
     const sp = getSupabase();
     if (!sp) {
       alert("Supabase is not configured.");
       return;
     }
+
     setCheckoutBusy(true);
     try {
       const { data: sessionData } = await sp.auth.getSession();
       const user = sessionData?.session?.user;
-      if (!user) {
+
+      if (!user?.email) {
         alert("Please sign in again.");
         return;
       }
 
-      // IMPORTANT:
-      // Implement this Edge Function on your Supabase project.
-      // It should create a Stripe Checkout session and return { url }.
-      const { data, error } = await sp.functions.invoke("create_tvtracker_checkout", {
+      const priceId = plan === "yearly" ? STRIPE_PRICE_YEARLY : STRIPE_PRICE_MONTHLY;
+
+      const { data, error } = await sp.functions.invoke("create-checkout-session", {
         body: {
-          // You can use this to select one-time vs subscription in the function:
-          // type: "one_time" | "subscription"
-          // Keep it simple; decide in the Edge Function.
-          type: "one_time",
-          product: "tvtracker_unlock",
-          success_url: window.location.origin,
-          cancel_url: window.location.origin,
+          priceId,
+          customerEmail: user.email,
         },
       });
 
@@ -1098,9 +1112,6 @@ export default function TVShowTracker() {
   };
 
   // ---------- Episode refresh (new episodes) ----------
-  // Called on demand (manual button) and when expanding a show.
-  // Looks for any episodes not present locally and appends them (watched:false).
-  // If show was completed and new episodes are appended, auto-downgrade to In Progress.
   const refreshEpisodesForShow = async (showId) => {
     if (!navigator.onLine) return;
     const details = await fetchShowDetails(showId);
@@ -1148,14 +1159,12 @@ export default function TVShowTracker() {
             }
           }
 
-          // keep stable ordering
           localList.sort((a, b) => (a.number || 0) - (b.number || 0));
           nextSeasons[sNum] = localList;
         });
 
         const nextShow = { ...show, seasons: nextSeasons };
 
-        // If added new eps and show was completed on first watch, downgrade:
         if (addedAny) {
           const priorStatus = show.status || inferStatusFromFirstWatch(show);
           if (priorStatus === STATUS.DONE) {
@@ -1206,7 +1215,6 @@ export default function TVShowTracker() {
           return normalizeShow(reconcileStatusAfterFirstWatchChange(next));
         }
 
-        // Rewatch changes do NOT affect main status
         const next = {
           ...show,
           rewatches: show.rewatches.map((rw) =>
@@ -1266,7 +1274,6 @@ export default function TVShowTracker() {
   };
 
   const markShowCompletedFirstWatch = (id) => {
-    // Explicit: set status completed AND set all first-watch episodes watched = true
     setMyShows((prev) =>
       prev.map((show) => {
         if (show.id !== id) return show;
@@ -1428,12 +1435,10 @@ export default function TVShowTracker() {
       if (filterStatus === "archived") return !!s.isArchived;
       if (filterStatus === "all") return !s.isArchived;
 
-      // status tabs are non-archived
       if (s.isArchived) return false;
       return status === filterStatus;
     });
 
-    // Paid-only: genre filter (non-destructive, persisted)
     const afterGenre =
       isPaid && genreFilter !== "all"
         ? base.filter((s) => (s.genres || []).includes(genreFilter))
@@ -1446,7 +1451,6 @@ export default function TVShowTracker() {
   // ---------- Alpha jump dropdown ----------
   const letterRefs = useRef({});
   const alphaOptions = useMemo(() => {
-    // only when sorting by title
     const effectiveSort =
       !isPaid && (sortBy === "year" || sortBy === "genre") ? "title" : sortBy;
     if (effectiveSort !== "title") return [];
@@ -1519,6 +1523,44 @@ export default function TVShowTracker() {
   // ---------- Render ----------
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 text-white p-4">
+      {/* PLAN PICKER MODAL */}
+      <Modal
+        open={planModalOpen}
+        title="Choose a plan"
+        onClose={() => setPlanModalOpen(false)}
+      >
+        <div className="text-sm text-slate-200">
+          Pick monthly or yearly billing. You’ll be redirected to secure Stripe Checkout.
+        </div>
+
+        <div className="mt-4 space-y-2">
+          <button
+            onClick={async () => {
+              setPlanModalOpen(false);
+              await startCheckout("monthly");
+            }}
+            disabled={checkoutBusy}
+            className="w-full rounded-lg bg-purple-600 hover:bg-purple-700 disabled:opacity-50 px-4 py-3 text-sm font-semibold"
+          >
+            {checkoutBusy ? "Starting…" : "Monthly"}
+          </button>
+          <button
+            onClick={async () => {
+              setPlanModalOpen(false);
+              await startCheckout("yearly");
+            }}
+            disabled={checkoutBusy}
+            className="w-full rounded-lg bg-slate-700 hover:bg-slate-600 disabled:opacity-50 px-4 py-3 text-sm font-semibold"
+          >
+            {checkoutBusy ? "Starting…" : "Yearly"}
+          </button>
+        </div>
+
+        <div className="mt-3 text-xs text-slate-400">
+          Note: Plan choice is made here (in-app), then we pass the chosen Stripe priceId.
+        </div>
+      </Modal>
+
       {/* FREE CAP MODAL */}
       <Modal open={limitModalOpen} title="Upgrade to add more shows" onClose={() => setLimitModalOpen(false)}>
         <div className="text-sm text-slate-200">
@@ -1538,9 +1580,9 @@ export default function TVShowTracker() {
             View options
           </button>
           <button
-            onClick={async () => {
+            onClick={() => {
               setLimitModalOpen(false);
-              await startCheckout();
+              setPlanModalOpen(true);
             }}
             disabled={checkoutBusy}
             className="rounded-lg bg-purple-600 hover:bg-purple-700 disabled:opacity-50 px-4 py-2 text-sm font-semibold"
@@ -1609,7 +1651,7 @@ export default function TVShowTracker() {
                         </div>
                         {!isPaid && (
                           <button
-                            onClick={startCheckout}
+                            onClick={() => setPlanModalOpen(true)}
                             disabled={checkoutBusy}
                             className="rounded bg-purple-600 hover:bg-purple-700 disabled:opacity-50 px-3 py-1.5 text-xs font-semibold"
                           >
@@ -1765,7 +1807,7 @@ export default function TVShowTracker() {
                         Recommendations, ratings, advanced sorting, and genre filter are unlocked with an upgrade.
                         <div className="mt-3">
                           <button
-                            onClick={startCheckout}
+                            onClick={() => setPlanModalOpen(true)}
                             disabled={checkoutBusy}
                             className="w-full rounded bg-purple-600 hover:bg-purple-700 disabled:opacity-50 px-3 py-2 text-sm font-medium"
                           >
@@ -1946,7 +1988,7 @@ export default function TVShowTracker() {
               </div>
             </div>
             <button
-              onClick={startCheckout}
+              onClick={() => setPlanModalOpen(true)}
               disabled={checkoutBusy}
               className="shrink-0 rounded bg-purple-600 hover:bg-purple-700 disabled:opacity-50 px-3 py-2 text-sm font-semibold"
             >
@@ -2319,7 +2361,6 @@ export default function TVShowTracker() {
                             <button
                               onClick={async () => {
                                 if (!isExpanded) {
-                                  // On expand, opportunistically refresh episodes (adds new ones + downgrades if needed)
                                   await refreshEpisodesForShow(show.id);
                                 }
                                 setExpandedShow(isExpanded ? null : show.id);
