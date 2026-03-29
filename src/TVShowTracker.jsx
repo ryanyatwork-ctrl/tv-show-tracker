@@ -559,9 +559,16 @@ export default function TVShowTracker() {
         return { ok: false, reason: "conflict", remoteShows };
       }
 
-      if (allowOverwrite) {
-        setMyShows(remoteShows.map(normalizeShow));
-      }
+     if (allowOverwrite) {
+  if (remoteShows.length === 0 && myShows.length > 0) {
+    // Remote is empty but local has data — keep local shows.
+    // hasPulledFromCloudRef will be set to true below so the
+    // auto-push will sync local shows up to the cloud.
+    setSyncMsg("Cloud library empty — keeping local data.");
+  } else {
+    setMyShows(remoteShows.map(normalizeShow));
+  }
+}
 
       hasPulledFromCloudRef.current = true;
       const nextMeta = saveSyncMeta({ lastPulledAt: Date.now() }) || syncMetaRef.current;
