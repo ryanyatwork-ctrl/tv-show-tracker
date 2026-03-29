@@ -2522,11 +2522,25 @@ export default function TVShowTracker() {
         )}
 
         <div className="mt-8 text-center text-sm text-slate-300 bg-slate-800 rounded-lg p-4">
-          <p className="mb-1">
-            <strong>Your data saves automatically.</strong>
-          </p>
-          <p>Want to Watch → In Progress → Completed. Archive older shows. Re-watch completed series.</p>
-        </div>
+  <p className="mb-1">
+    <strong>Your data saves automatically.</strong>
+  </p>
+  <p>Want to Watch → In Progress → Completed. Archive older shows. Re-watch completed series.</p>
+  <div className="mt-4 flex justify-center">
+    <a
+      href="https://www.producthunt.com/posts/tv-tracker"
+      target="_blank"
+      rel="noopener noreferrer"
+    >
+      <img
+        src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1110282&theme=dark&t=1774811172022"
+        alt="TV Tracker on Product Hunt"
+        width="250"
+        height="54"
+      />
+    </a>
+  </div>
+</div>
       </div>
     </div>
   );
