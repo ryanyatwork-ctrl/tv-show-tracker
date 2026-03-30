@@ -239,7 +239,6 @@ function normalizeShow(s) {
     isArchived: !!s.isArchived,
   };
 
-  // Migrate legacy "Status" derived from progress if missing/invalid
   const valid =
     base.status === STATUS.WANT || base.status === STATUS.PROGRESS || base.status === STATUS.DONE;
 
@@ -461,8 +460,6 @@ export default function TVShowTracker() {
     }
   };
 
-  // Stripe checkout (Supabase Edge Function: create-checkout-session)
-  // Expected return: { url: "https://checkout.stripe.com/..." }
   const startCheckout = async (plan = "monthly") => {
     if (!isSignedIn) {
       alert("Please sign in first so your purchase can attach to your account.");
@@ -559,16 +556,13 @@ export default function TVShowTracker() {
         return { ok: false, reason: "conflict", remoteShows };
       }
 
-     if (allowOverwrite) {
-  if (remoteShows.length === 0 && myShows.length > 0) {
-    // Remote is empty but local has data — keep local shows.
-    // hasPulledFromCloudRef will be set to true below so the
-    // auto-push will sync local shows up to the cloud.
-    setSyncMsg("Cloud library empty — keeping local data.");
-  } else {
-    setMyShows(remoteShows.map(normalizeShow));
-  }
-}
+      if (allowOverwrite) {
+        if (remoteShows.length === 0 && myShows.length > 0) {
+          setSyncMsg("Cloud library empty — keeping local data.");
+        } else {
+          setMyShows(remoteShows.map(normalizeShow));
+        }
+      }
 
       hasPulledFromCloudRef.current = true;
       const nextMeta = saveSyncMeta({ lastPulledAt: Date.now() }) || syncMetaRef.current;
@@ -709,17 +703,30 @@ export default function TVShowTracker() {
     }
   };
 
-  <button
-  onClick={signInWithGoogle}
-  className="w-full rounded bg-purple-600 hover:bg-purple-700 px-3 py-2 text-sm font-medium"
->
-  Continue with Google
-</button>
-
-{/* ADD THIS LINE BELOW */}
-<p className="text-xs text-slate-400 text-center">
-  Used email sign-in before? Sign in with email first, then link Google.
-</p>
+  const signInWithGoogle = async () => {
+    try {
+      const sp = getSupabase();
+      if (!sp) {
+        alert("Supabase is not configured.");
+        return;
+      }
+      // If already signed in with email, LINK Google instead of creating a new account
+      const { data: { session } } = await sp.auth.getSession();
+      if (session?.user) {
+        const { error } = await sp.auth.linkIdentity({ provider: "google" });
+        if (error) throw error;
+        return;
+      }
+      // Not signed in — normal OAuth flow
+      const { error } = await sp.auth.signInWithOAuth({
+        provider: "google",
+        options: { redirectTo: window.location.origin },
+      });
+      if (error) throw error;
+    } catch (e) {
+      alert(e.message || "Google sign-in failed.");
+    }
+  };
 
   const signOut = async () => {
     try {
@@ -781,7 +788,6 @@ export default function TVShowTracker() {
   };
 
   const getWatchProgress = (show) => {
-    // For display, respect current watch selection (first watch or rewatch)
     const { seasons } = getCurrentWatchData(show);
     let total = 0;
     let watched = 0;
@@ -805,7 +811,6 @@ export default function TVShowTracker() {
   };
 
   const setStatusByFirstWatch = (show) => {
-    // Computes status and writes back to show.status (first-watch only)
     const inferred = inferStatusFromFirstWatch(show);
     return inferred;
   };
@@ -813,7 +818,6 @@ export default function TVShowTracker() {
   const getSortedShows = (shows) => {
     const arr = [...shows];
 
-    // Paid gating: free users only get Added + Title sorting
     const effectiveSort =
       !isPaid && (sortBy === "year" || sortBy === "genre") ? "title" : sortBy;
 
@@ -853,7 +857,6 @@ export default function TVShowTracker() {
   };
 
   const resetFirstWatchProgress = (id) => {
-    // clears watched flags for first watch seasons only
     setMyShows((prev) =>
       prev.map((show) => {
         if (show.id !== id) return show;
@@ -868,11 +871,9 @@ export default function TVShowTracker() {
 
         const nextShow = { ...show, seasons: nextSeasons };
 
-        // Rule: if neither archive nor rewatch => Want to Watch
         if (!isArchived && !inRewatchView) {
           nextShow.status = STATUS.WANT;
         } else {
-          // otherwise, keep status as-is (user intent)
           nextShow.status = show.status || inferStatusFromFirstWatch(nextShow);
         }
 
@@ -1084,7 +1085,6 @@ export default function TVShowTracker() {
       addedDate: new Date().toISOString(),
       rewatches: [],
       rating: 0,
-      // NEW: starts in Want to Watch
       status: STATUS.WANT,
       isArchived: false,
     });
@@ -1532,7 +1532,7 @@ export default function TVShowTracker() {
         onClose={() => setPlanModalOpen(false)}
       >
         <div className="text-sm text-slate-200">
-          Pick monthly or yearly billing. You’ll be redirected to secure Stripe Checkout.
+          Pick monthly or yearly billing. You'll be redirected to secure Stripe Checkout.
         </div>
 
         <div className="mt-4 space-y-2">
@@ -1692,6 +1692,10 @@ export default function TVShowTracker() {
                         Continue with Google
                       </button>
 
+                      <p className="text-xs text-slate-400 text-center">
+                        Used email sign-in before? Sign in with email first, then link Google.
+                      </p>
+
                       <button
                         onClick={() => setShowEmailForm((v) => !v)}
                         className="w-full rounded bg-slate-700 hover:bg-slate-600 px-3 py-2 text-sm"
@@ -1797,7 +1801,7 @@ export default function TVShowTracker() {
                     )}
                   </div>
 
-                  {/* Recommendations (kept in hamburger menu) */}
+                  {/* Recommendations */}
                   <div className="px-3 py-2 text-xs text-slate-400 border-b border-slate-700">
                     Recommendations
                   </div>
@@ -1943,7 +1947,7 @@ export default function TVShowTracker() {
                   <div className="px-3 py-2 text-xs text-slate-400 border-t border-slate-700">
                     Support
                   </div>
-                  <a
+                  
                     href="https://paypal.me/Yelltom"
                     target="_blank"
                     rel="noopener noreferrer"
@@ -1952,7 +1956,7 @@ export default function TVShowTracker() {
                     <DollarSign className="w-4 h-4" />
                     Donate via PayPal
                   </a>
-                  <a
+                  
                     href="https://www.venmo.com/u/BellevilleSystems"
                     target="_blank"
                     rel="noopener noreferrer"
@@ -1968,7 +1972,7 @@ export default function TVShowTracker() {
         </div>
       </header>
 
-      {/* SEARCH / ADD (constrained width) */}
+      {/* SEARCH / ADD */}
       <div className="mb-8 bg-slate-800 rounded-lg p-6 shadow-xl max-w-3xl mx-auto">
         <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
           <Plus className="w-5 h-5 text-purple-400" />
@@ -2095,7 +2099,6 @@ export default function TVShowTracker() {
             <div className="flex items-center gap-3 flex-wrap">
               <h2 className="text-2xl font-semibold">{titleText}</h2>
 
-              {/* Alpha jump dropdown next to count */}
               {(!(!isPaid && (sortBy === "year" || sortBy === "genre")) ? sortBy : "title") === "title" &&
                 alphaOptions.length > 0 && (
                   <div className="flex items-center gap-2">
@@ -2123,7 +2126,6 @@ export default function TVShowTracker() {
             </div>
 
             <div className="flex gap-3 flex-wrap">
-              {/* Sort (paid gating for Year/Genre) */}
               <select
                 value={sortBy}
                 onChange={(e) => setSortBy(e.target.value)}
@@ -2139,7 +2141,6 @@ export default function TVShowTracker() {
                 </option>
               </select>
 
-              {/* Genre filter (paid-only, persisted, non-destructive) */}
               <select
                 value={genreFilter}
                 onChange={(e) => setGenreFilter(e.target.value)}
@@ -2322,7 +2323,6 @@ export default function TVShowTracker() {
                             </div>
                           )}
 
-                          {/* Progress (current view) */}
                           <div className="mb-2">
                             <div className="flex justify-between text-sm text-slate-400 mb-1">
                               <span>
@@ -2343,7 +2343,6 @@ export default function TVShowTracker() {
                             </div>
                           </div>
 
-                          {/* First watch status basis */}
                           <div className="mb-3 text-xs text-slate-400">
                             Status is based on <span className="text-slate-200 font-semibold">First Watch</span>:{" "}
                             {first.watched}/{first.total} ({firstPct}%)
@@ -2524,25 +2523,25 @@ export default function TVShowTracker() {
         )}
 
         <div className="mt-8 text-center text-sm text-slate-300 bg-slate-800 rounded-lg p-4">
-  <p className="mb-1">
-    <strong>Your data saves automatically.</strong>
-  </p>
-  <p>Want to Watch → In Progress → Completed. Archive older shows. Re-watch completed series.</p>
-  <div className="mt-4 flex justify-center">
-    <a
-      href="https://www.producthunt.com/posts/tv-tracker"
-      target="_blank"
-      rel="noopener noreferrer"
-    >
-      <img
-        src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1110282&theme=dark&t=1774811172022"
-        alt="TV Tracker on Product Hunt"
-        width="250"
-        height="54"
-      />
-    </a>
-  </div>
-</div>
+          <p className="mb-1">
+            <strong>Your data saves automatically.</strong>
+          </p>
+          <p>Want to Watch → In Progress → Completed. Archive older shows. Re-watch completed series.</p>
+          <div className="mt-4 flex justify-center">
+            
+              href="https://www.producthunt.com/posts/tv-tracker"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <img
+                src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1110282&theme=dark&t=1774811172022"
+                alt="TV Tracker on Product Hunt"
+                width="250"
+                height="54"
+              />
+            </a>
+          </div>
+        </div>
       </div>
     </div>
   );
