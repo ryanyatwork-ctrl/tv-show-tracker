@@ -1947,7 +1947,7 @@ export default function TVShowTracker() {
                   <div className="px-3 py-2 text-xs text-slate-400 border-t border-slate-700">
                     Support
                   </div>
-                  
+                  <a
                     href="https://paypal.me/Yelltom"
                     target="_blank"
                     rel="noopener noreferrer"
@@ -1956,7 +1956,7 @@ export default function TVShowTracker() {
                     <DollarSign className="w-4 h-4" />
                     Donate via PayPal
                   </a>
-                  
+                  <a
                     href="https://www.venmo.com/u/BellevilleSystems"
                     target="_blank"
                     rel="noopener noreferrer"
