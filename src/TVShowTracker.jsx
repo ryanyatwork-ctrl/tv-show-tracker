@@ -2528,7 +2528,7 @@ export default function TVShowTracker() {
           </p>
           <p>Want to Watch → In Progress → Completed. Archive older shows. Re-watch completed series.</p>
           <div className="mt-4 flex justify-center">
-            
+            <a
               href="https://www.producthunt.com/posts/tv-tracker"
               target="_blank"
               rel="noopener noreferrer"
