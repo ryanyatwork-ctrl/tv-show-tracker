@@ -709,22 +709,17 @@ export default function TVShowTracker() {
     }
   };
 
-  const signInWithGoogle = async () => {
-    try {
-      const sp = getSupabase();
-      if (!sp) {
-        alert("Supabase is not configured.");
-        return;
-      }
-      const { error } = await sp.auth.signInWithOAuth({
-        provider: "google",
-        options: { redirectTo: window.location.origin },
-      });
-      if (error) throw error;
-    } catch (e) {
-      alert(e.message || "Google sign-in failed.");
-    }
-  };
+  <button
+  onClick={signInWithGoogle}
+  className="w-full rounded bg-purple-600 hover:bg-purple-700 px-3 py-2 text-sm font-medium"
+>
+  Continue with Google
+</button>
+
+{/* ADD THIS LINE BELOW */}
+<p className="text-xs text-slate-400 text-center">
+  Used email sign-in before? Sign in with email first, then link Google.
+</p>
 
   const signOut = async () => {
     try {
