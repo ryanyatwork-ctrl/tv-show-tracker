@@ -779,6 +779,18 @@ export default function TVShowTracker() {
   // ---------- Streaming availability ----------
   const [streamingMap, setStreamingMap] = useState({});
   const [selectedShow, setSelectedShow] = useState(null);
+
+  // ---------- Scroll-aware sticky header ----------
+  const [hasScrolled, setHasScrolled] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  useEffect(() => {
+    const onScroll = () => {
+      setHasScrolled(window.scrollY > 80);
+      if (window.scrollY <= 80) setFiltersOpen(false);
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
   const fetchedStreamingRef = useRef(new Set());
 
   useEffect(() => {
@@ -2150,8 +2162,17 @@ export default function TVShowTracker() {
                   </div>
                 )}
             </div>
+            {hasScrolled && (
+              <button
+                onClick={() => setFiltersOpen((f) => !f)}
+                className="ml-2 flex items-center gap-1 px-2 py-1 rounded-lg bg-slate-700/70 text-slate-300 text-xs hover:bg-slate-600/70 transition-colors"
+              >
+                <ChevronDown className={`w-3 h-3 transition-transform duration-200 ${filtersOpen ? "rotate-180" : ""}`} />
+                Filters
+              </button>
+            )}
 
-            <div className="flex gap-3 flex-wrap">
+            <div className={hasScrolled && !filtersOpen ? "hidden" : "flex gap-3 flex-wrap"}>
               <select
                 value={sortBy}
                 onChange={(e) => setSortBy(e.target.value)}
@@ -2186,7 +2207,7 @@ export default function TVShowTracker() {
           </div>
 
           {/* Tabs */}
-          <div className="flex flex-wrap gap-2">
+          <div className={hasScrolled && !filtersOpen ? "hidden" : "flex flex-wrap gap-2"}>
             {FILTERS.map((t) => {
               const n = counts[t.key] ?? 0;
               const active = filterStatus === t.key;
