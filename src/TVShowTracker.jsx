@@ -26,6 +26,7 @@ import { getStreamingInfo } from "./services/streamingService";
 import StreamingBadges from "./components/StreamingBadges";
 import ShowDetailModal from "./components/ShowDetailModal";
 import AdminPanel from "./components/AdminPanel";
+import HelpModal from "./components/HelpModal";
 
 /**
  * TVShowTracker (Supabase-enabled)
@@ -788,6 +789,7 @@ export default function TVShowTracker() {
   const [streamingMap, setStreamingMap] = useState({});
   const [selectedShow, setSelectedShow] = useState(null);
   const [adminOpen, setAdminOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [menuDataOpen, setMenuDataOpen] = useState(false);
   const [menuSupportOpen, setMenuSupportOpen] = useState(false);
 
@@ -1664,6 +1666,7 @@ export default function TVShowTracker() {
             )}
 
             {/* Hamburger */}
+            <button onClick={() => setHelpOpen(true)} className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 mr-2 text-slate-300 hover:text-white font-bold text-sm" title="Help">?</button>
             <div className="relative" ref={menuRef}>
               <button
                 onClick={() => setMenuOpen((v) => !v)}
@@ -2601,6 +2604,7 @@ export default function TVShowTracker() {
         )}
 
         {adminOpen && <AdminPanel onClose={() => setAdminOpen(false)} />}
+        {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
         <ShowDetailModal
           show={selectedShow ? myShows.find((s) => s.id === selectedShow) : null}
           streamingResult={selectedShow ? streamingMap[selectedShow] : null}
@@ -2611,6 +2615,13 @@ export default function TVShowTracker() {
             <strong>Your data saves automatically.</strong>
           </p>
           <p>Want to Watch → In Progress → Completed. Archive older shows. Re-watch completed series.</p>
+          <div className="mt-3 flex justify-center flex-wrap gap-3 text-xs text-slate-400">
+            <a href="mailto:contact@tvtracker.me" className="hover:text-purple-400 transition-colors">contact@tvtracker.me</a>
+            <span>·</span>
+            <a href="/tos.html" target="_blank" className="hover:text-purple-400 transition-colors">Terms of Service</a>
+            <span>·</span>
+            <a href="/privacy.html" target="_blank" className="hover:text-purple-400 transition-colors">Privacy Policy</a>
+          </div>
           <div className="mt-4 flex justify-center">
             <a
               href="https://www.producthunt.com/posts/tv-tracker"
