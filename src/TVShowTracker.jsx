@@ -1488,15 +1488,7 @@ export default function TVShowTracker() {
 
   // ---------- Alpha jump dropdown ----------
   const letterRefs = useRef({});
-  const showsPerLetter = useMemo(() => {
-    const effectiveSort = !isPaid && (sortBy === "year" || sortBy === "genre") ? "title" : sortBy;
-    if (effectiveSort !== "title") return {};
-    return visibleShows.reduce((acc, s) => {
-      const l = alphaGroupKey(s?.name || "");
-      acc[l] = (acc[l] || 0) + 1;
-      return acc;
-    }, {});
-  }, [visibleShows, sortBy, isPaid]);
+
   const alphaOptions = useMemo(() => {
     const effectiveSort =
       !isPaid && (sortBy === "year" || sortBy === "genre") ? "title" : sortBy;
