@@ -21,6 +21,8 @@ import {
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import { getSupabase } from "./lib/supabase";
+import { getStreamingInfo } from "./services/streamingService";
+import StreamingBadges from "./components/StreamingBadges";
 
 /**
  * TVShowTracker (Supabase-enabled)
