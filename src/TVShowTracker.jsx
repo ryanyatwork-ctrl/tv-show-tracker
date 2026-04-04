@@ -1485,6 +1485,15 @@ export default function TVShowTracker() {
 
   // ---------- Alpha jump dropdown ----------
   const letterRefs = useRef({});
+  const showsPerLetter = useMemo(() => {
+    const effectiveSort = !isPaid && (sortBy === "year" || sortBy === "genre") ? "title" : sortBy;
+    if (effectiveSort !== "title") return {};
+    return visibleShows.reduce((acc, s) => {
+      const l = alphaGroupKey(s?.name || "");
+      acc[l] = (acc[l] || 0) + 1;
+      return acc;
+    }, {});
+  }, [visibleShows, sortBy, isPaid]);
   const alphaOptions = useMemo(() => {
     const effectiveSort =
       !isPaid && (sortBy === "year" || sortBy === "genre") ? "title" : sortBy;
@@ -2271,9 +2280,16 @@ export default function TVShowTracker() {
                       ref={(el) => {
                         if (el) letterRefs.current[thisLetter] = el;
                       }}
-                      className="flex flex-col items-center justify-center rounded-lg border border-purple-900/40 bg-zinc-900/40 self-stretch min-h-[80px] md:min-h-0"
+                      className={prevLetter && showsPerLetter[prevLetter] === 1 ? "flex flex-col items-center justify-center rounded-lg border border-purple-900/40 bg-zinc-900/40 self-stretch" : "col-span-full flex items-center gap-3 pt-2 pb-1"}
                     >
-                      <span className="text-3xl font-bold text-purple-400">{thisLetter}</span>
+                      {prevLetter && showsPerLetter[prevLetter] === 1 ? (
+                        <span className="text-2xl font-bold text-purple-400">{thisLetter}</span>
+                      ) : (
+                        <>
+                          <span className="text-2xl font-bold text-purple-400 w-8 flex-shrink-0">{thisLetter}</span>
+                          <div className="flex-1 h-px bg-purple-800/50" />
+                        </>
+                      )}
                     </div>
                   )}
 
