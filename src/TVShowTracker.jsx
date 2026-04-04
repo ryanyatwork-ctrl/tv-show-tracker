@@ -1486,7 +1486,11 @@ export default function TVShowTracker() {
 
   const jumpToLetter = (letter) => {
     const el = letterRefs.current[letter];
-    if (el?.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (!el) return;
+    const stickyBar = document.querySelector(".sticky");
+    const offset = stickyBar ? stickyBar.getBoundingClientRect().height : 80;
+    const top = el.getBoundingClientRect().top + window.scrollY - offset - 8;
+    window.scrollTo({ top, behavior: "smooth" });
   };
 
   // ---------- Menu sync actions ----------
