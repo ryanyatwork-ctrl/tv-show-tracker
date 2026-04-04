@@ -739,6 +739,12 @@ export default function TVShowTracker() {
       if (!sp) return;
       const { error } = await sp.auth.signOut();
       if (error) console.warn("Sign out error:", error);
+      // Clear all local data so the screen resets to default
+      setMyShows([]);
+      setIsPaid(false);
+      setMenuOpen(false);
+      hasPulledFromCloudRef.current = false;
+      try { localStorage.removeItem("tvShowTrackerData"); } catch { /* ignore */ }
     } catch (e) {
       console.error("Sign out failed:", e);
     }
@@ -782,6 +788,8 @@ export default function TVShowTracker() {
   const [streamingMap, setStreamingMap] = useState({});
   const [selectedShow, setSelectedShow] = useState(null);
   const [adminOpen, setAdminOpen] = useState(false);
+  const [menuDataOpen, setMenuDataOpen] = useState(false);
+  const [menuSupportOpen, setMenuSupportOpen] = useState(false);
 
   // ---------- Scroll-aware sticky header ----------
   const [hasScrolled, setHasScrolled] = useState(false);
@@ -1710,19 +1718,7 @@ export default function TVShowTracker() {
                         Sign out
                       </button>
 
-                      <button
-                        onClick={async () => {
-                          const sp = getSupabase();
-                          const {
-                            data: { session },
-                          } = await sp.auth.getSession();
-                          await refreshPaidStatus(session?.user?.id);
-                        }}
-                        className="mt-2 w-full rounded bg-slate-700 hover:bg-slate-600 px-3 py-2 text-sm"
-                        title="Refresh paid status from the server"
-                      >
-                        Refresh paid status
-                      </button>
+
                     </div>
                   ) : (
                     <div className="px-4 py-3 border-b border-slate-700 space-y-3">
@@ -1956,33 +1952,33 @@ export default function TVShowTracker() {
                   </div>
 
                   {/* Data */}
-                  <div className="px-3 py-2 text-xs text-slate-400 border-b border-slate-700">
-                    Data
-                  </div>
-
-                  <label className="flex items-center gap-2 px-4 py-3 hover:bg-slate-700 cursor-pointer">
-                    <Upload className="w-4 h-4" />
-                    <span>Import Data (JSON)</span>
-                    <input type="file" accept=".json" onChange={importData} className="hidden" />
-                  </label>
-
                   <button
-                    onClick={exportJSON}
-                    disabled={myShows.length === 0}
-                    className="w-full flex items-center gap-2 px-4 py-3 hover:bg-slate-700 disabled:opacity-50"
+                    onClick={() => setMenuDataOpen((v) => !v)}
+                    className="w-full flex items-center justify-between px-4 py-3 hover:bg-slate-700 border-t border-slate-700 text-sm"
                   >
-                    <Download className="w-4 h-4" />
-                    <span>Export JSON</span>
+                    <div className="flex items-center gap-2">
+                      <Download className="w-4 h-4 text-slate-400" />
+                      <span>Import / Export</span>
+                    </div>
+                    <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${menuDataOpen ? "rotate-180" : ""}`} />
                   </button>
-
-                  <button
-                    onClick={exportExcel}
-                    disabled={myShows.length === 0}
-                    className="w-full flex items-center gap-2 px-4 py-3 hover:bg-slate-700 disabled:opacity-50"
-                  >
-                    <Download className="w-4 h-4" />
-                    <span>Export Excel</span>
-                  </button>
+                  {menuDataOpen && (
+                    <div className="bg-slate-900/50 border-b border-slate-700">
+                      <label className="flex items-center gap-2 px-6 py-2.5 hover:bg-slate-700 cursor-pointer text-sm text-slate-300">
+                        <Upload className="w-3.5 h-3.5" />
+                        <span>Import JSON</span>
+                        <input type="file" accept=".json" onChange={importData} className="hidden" />
+                      </label>
+                      <button onClick={exportJSON} disabled={myShows.length === 0} className="w-full flex items-center gap-2 px-6 py-2.5 hover:bg-slate-700 disabled:opacity-40 text-sm text-slate-300">
+                        <Download className="w-3.5 h-3.5" />
+                        <span>Export JSON</span>
+                      </button>
+                      <button onClick={exportExcel} disabled={myShows.length === 0} className="w-full flex items-center gap-2 px-6 py-2.5 hover:bg-slate-700 disabled:opacity-40 text-sm text-slate-300">
+                        <Download className="w-3.5 h-3.5" />
+                        <span>Export Excel</span>
+                      </button>
+                    </div>
+                  )}
 
                   {/* Admin — only visible to ryan.young@gmail.com */}
                   {userEmail === 'ryan.young@gmail.com' && (
@@ -1999,27 +1995,28 @@ export default function TVShowTracker() {
                   )}
 
                   {/* Support */}
-                  <div className="px-3 py-2 text-xs text-slate-400 border-t border-slate-700">
-                    Support
-                  </div>
-                  <a
-                    href="https://paypal.me/Yelltom"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center gap-2 px-4 py-3 hover:bg-slate-700"
+                  <button
+                    onClick={() => setMenuSupportOpen((v) => !v)}
+                    className="w-full flex items-center justify-between px-4 py-3 hover:bg-slate-700 border-t border-slate-700 text-sm"
                   >
-                    <DollarSign className="w-4 h-4" />
-                    Donate via PayPal
-                  </a>
-                  <a
-                    href="https://www.venmo.com/u/BellevilleSystems"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center gap-2 px-4 py-3 hover:bg-slate-700"
-                  >
-                    <DollarSign className="w-4 h-4" />
-                    Donate via Venmo
-                  </a>
+                    <div className="flex items-center gap-2">
+                      <DollarSign className="w-4 h-4 text-slate-400" />
+                      <span>Support the Dev</span>
+                    </div>
+                    <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${menuSupportOpen ? "rotate-180" : ""}`} />
+                  </button>
+                  {menuSupportOpen && (
+                    <div className="bg-slate-900/50 border-b border-slate-700 px-4 py-3 flex gap-3">
+                      <a href="https://paypal.me/Yelltom" target="_blank" rel="noopener noreferrer"
+                        className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-sm font-medium">
+                        <DollarSign className="w-3.5 h-3.5" /> PayPal
+                      </a>
+                      <a href="https://www.venmo.com/u/BellevilleSystems" target="_blank" rel="noopener noreferrer"
+                        className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-teal-600 hover:bg-teal-700 text-sm font-medium">
+                        <DollarSign className="w-3.5 h-3.5" /> Venmo
+                      </a>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
