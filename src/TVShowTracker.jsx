@@ -24,6 +24,7 @@ import { getSupabase } from "./lib/supabase";
 import { getStreamingInfo } from "./services/streamingService";
 import StreamingBadges from "./components/StreamingBadges";
 import ShowDetailModal from "./components/ShowDetailModal";
+import AdminPanel from "./components/AdminPanel";
 
 /**
  * TVShowTracker (Supabase-enabled)
@@ -779,6 +780,7 @@ export default function TVShowTracker() {
   // ---------- Streaming availability ----------
   const [streamingMap, setStreamingMap] = useState({});
   const [selectedShow, setSelectedShow] = useState(null);
+  const [adminOpen, setAdminOpen] = useState(false);
 
   // ---------- Scroll-aware sticky header ----------
   const [hasScrolled, setHasScrolled] = useState(false);
@@ -1989,6 +1991,20 @@ export default function TVShowTracker() {
                     <span>Export Excel</span>
                   </button>
 
+                  {/* Admin — only visible to ryan.young@gmail.com */}
+                  {userEmail === 'ryan.young@gmail.com' && (
+                    <>
+                      <div className="px-3 py-2 text-xs text-slate-400 border-t border-slate-700">Admin</div>
+                      <button
+                        onClick={() => { setAdminOpen(true); setMenuOpen(false); }}
+                        className="w-full flex items-center gap-2 px-4 py-3 hover:bg-slate-700 text-purple-400"
+                      >
+                        <Users className="w-4 h-4" />
+                        <span>Admin Panel</span>
+                      </button>
+                    </>
+                  )}
+
                   {/* Support */}
                   <div className="px-3 py-2 text-xs text-slate-400 border-t border-slate-700">
                     Support
@@ -2594,6 +2610,7 @@ export default function TVShowTracker() {
           </div>
         )}
 
+        {adminOpen && <AdminPanel onClose={() => setAdminOpen(false)} />}
         <ShowDetailModal
           show={selectedShow ? myShows.find((s) => s.id === selectedShow) : null}
           streamingResult={selectedShow ? streamingMap[selectedShow] : null}
