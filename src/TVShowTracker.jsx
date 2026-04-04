@@ -2297,7 +2297,7 @@ export default function TVShowTracker() {
                       ref={(el) => {
                         if (el) letterRefs.current[thisLetter] = el;
                       }}
-                      className={prevLetter && showsPerLetter[prevLetter] === 1 ? "flex flex-col items-center justify-center rounded-lg border border-purple-900/40 bg-zinc-900/40 self-stretch" : "col-span-full flex items-center gap-3 pt-2 pb-1"}
+                      className={prevLetter && showsPerLetter[prevLetter] === 1 && showsPerLetter[thisLetter] >= 1 ? "flex flex-col items-center justify-center rounded-lg border border-purple-900/40 bg-zinc-900/40 self-stretch" : "col-span-full flex items-center gap-3 pt-2 pb-1"}
                     >
                       {prevLetter && showsPerLetter[prevLetter] === 1 ? (
                         <span className="text-2xl font-bold text-purple-400">{thisLetter}</span>
