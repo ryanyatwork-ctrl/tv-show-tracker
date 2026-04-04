@@ -2115,7 +2115,8 @@ export default function TVShowTracker() {
 
       {/* CATEGORY TABS + CONTROLS */}
       {myShows.length > 0 && (
-        <div className="max-w-6xl mx-auto mb-4 space-y-3">
+        <div className="sticky top-0 z-40 backdrop-blur-md bg-[#0d0d14]/95 -mx-6 px-6 pb-3 shadow-lg shadow-black/40">
+        <div className="max-w-6xl mx-auto space-y-3 pt-2">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3 flex-wrap">
               <h2 className="text-2xl font-semibold">{titleText}</h2>
@@ -2199,6 +2200,7 @@ export default function TVShowTracker() {
             })}
           </div>
         </div>
+        </div>
       )}
 
       {/* SHOWS GRID */}
@@ -2244,8 +2246,11 @@ export default function TVShowTracker() {
                       ref={(el) => {
                         if (el) letterRefs.current[thisLetter] = el;
                       }}
-                      className="col-span-full h-0"
-                    />
+                      className="col-span-full flex items-center gap-3 pt-2 pb-1"
+                    >
+                      <span className="text-2xl font-bold text-purple-400 w-8 flex-shrink-0">{thisLetter}</span>
+                      <div className="flex-1 h-px bg-purple-800/50" />
+                    </div>
                   )}
 
                   <article
