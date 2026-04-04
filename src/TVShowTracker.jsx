@@ -775,6 +775,23 @@ export default function TVShowTracker() {
   // Free cap modal
   const [limitModalOpen, setLimitModalOpen] = useState(false);
 
+  // ---------- Streaming availability ----------
+  const [streamingMap, setStreamingMap] = useState({});
+  const fetchedStreamingRef = useRef(new Set());
+
+  useEffect(() => {
+    if (!isSignedIn) return;
+    myShows.forEach((show) => {
+      if (fetchedStreamingRef.current.has(show.id)) return;
+      fetchedStreamingRef.current.add(show.id);
+      getStreamingInfo(show.id, show.name, show.premiered).then((result) => {
+        if (result?.providers) {
+          setStreamingMap((prev) => ({ ...prev, [show.id]: result }));
+        }
+      });
+    });
+  }, [myShows, isSignedIn]);
+
   // ---------- Helpers ----------
   const isShowAdded = (id) => myShows.some((s) => s.id === id);
 
@@ -2236,13 +2253,19 @@ export default function TVShowTracker() {
                   >
                     <div className="p-4">
                       <div className="flex items-start gap-4">
-                        {show.image && (
-                          <img
-                            src={show.image}
-                            alt={show.name}
-                            className="w-20 h-28 object-cover rounded"
+                        <div className="flex flex-col items-center gap-1 flex-shrink-0" style={{width: '80px'}}>
+                          {show.image && (
+                            <img
+                              src={show.image}
+                              alt={show.name}
+                              className="w-20 h-28 object-cover rounded"
+                            />
+                          )}
+                          <StreamingBadges
+                            result={streamingMap[show.id]}
+                            loading={!streamingMap[show.id] && isSignedIn}
                           />
-                        )}
+                        </div>
                         <div className="flex-1">
                           <div className="flex items-start justify-between mb-2">
                             <div>
