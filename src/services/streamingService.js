@@ -16,7 +16,7 @@ export async function getStreamingInfo(showId, title, premiered) {
     });
 
     if (error) throw error;
-    return data; // { providers, source, fetched_at, cached }
+    return data;
   } catch (err) {
     console.error("getStreamingInfo failed:", err);
     return null;
