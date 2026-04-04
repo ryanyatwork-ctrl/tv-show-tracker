@@ -23,6 +23,7 @@ import * as XLSX from "xlsx";
 import { getSupabase } from "./lib/supabase";
 import { getStreamingInfo } from "./services/streamingService";
 import StreamingBadges from "./components/StreamingBadges";
+import ShowDetailModal from "./components/ShowDetailModal";
 
 /**
  * TVShowTracker (Supabase-enabled)
@@ -777,6 +778,7 @@ export default function TVShowTracker() {
 
   // ---------- Streaming availability ----------
   const [streamingMap, setStreamingMap] = useState({});
+  const [selectedShow, setSelectedShow] = useState(null);
   const fetchedStreamingRef = useRef(new Set());
 
   useEffect(() => {
@@ -2258,7 +2260,7 @@ export default function TVShowTracker() {
                             <img
                               src={show.image}
                               alt={show.name}
-                              className="w-20 h-28 object-cover rounded"
+                              className="w-20 h-28 object-cover rounded cursor-pointer hover:opacity-80 transition-opacity" onClick={() => setSelectedShow(show.id)}
                             />
                           )}
                           <StreamingBadges
@@ -2270,7 +2272,7 @@ export default function TVShowTracker() {
                           <div className="flex items-start justify-between mb-2">
                             <div>
                               <div className="flex items-center gap-2 flex-wrap">
-                                <h3 className="text-xl font-semibold">{show.name}</h3>
+                                <h3 className="text-xl font-semibold cursor-pointer hover:text-purple-400 transition-colors" onClick={() => setSelectedShow(show.id)}>{show.name}</h3>
 
                                 {show.isArchived && (
                                   <span className="flex items-center gap-1 px-3 py-1 bg-slate-700 rounded-full text-xs font-bold text-white">
@@ -2547,6 +2549,11 @@ export default function TVShowTracker() {
           </div>
         )}
 
+        <ShowDetailModal
+          show={selectedShow ? myShows.find((s) => s.id === selectedShow) : null}
+          streamingResult={selectedShow ? streamingMap[selectedShow] : null}
+          onClose={() => setSelectedShow(null)}
+        />
         <div className="mt-8 text-center text-sm text-slate-300 bg-slate-800 rounded-lg p-4">
           <p className="mb-1">
             <strong>Your data saves automatically.</strong>
