@@ -2290,6 +2290,12 @@ export default function TVShowTracker() {
                     >
                       <span className="text-2xl font-bold text-purple-400 w-8 flex-shrink-0">{thisLetter}</span>
                       <div className="flex-1 h-px bg-purple-800/50" />
+                      <button
+                        onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+                        className="text-xs text-purple-500 hover:text-purple-300 transition-colors flex-shrink-0 ml-2 px-2 py-0.5 rounded hover:bg-purple-900/30"
+                      >
+                        ↑ Top
+                      </button>
                     </div>
                   )}
 
