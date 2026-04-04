@@ -2271,10 +2271,9 @@ export default function TVShowTracker() {
                       ref={(el) => {
                         if (el) letterRefs.current[thisLetter] = el;
                       }}
-                      className="col-span-full flex items-center gap-3 pt-2 pb-1"
+                      className="flex flex-col items-center justify-center rounded-lg border border-purple-900/40 bg-zinc-900/40 self-stretch min-h-[80px] md:min-h-0"
                     >
-                      <span className="text-2xl font-bold text-purple-400 w-8 flex-shrink-0">{thisLetter}</span>
-                      <div className="flex-1 h-px bg-purple-800/50" />
+                      <span className="text-3xl font-bold text-purple-400">{thisLetter}</span>
                     </div>
                   )}
 
