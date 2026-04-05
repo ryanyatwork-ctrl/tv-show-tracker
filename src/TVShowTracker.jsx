@@ -1575,7 +1575,7 @@ export default function TVShowTracker() {
 
   // ---------- Render ----------
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 text-white p-4 overflow-x-hidden">
+    <div className="fixed inset-0 flex flex-col bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 text-white overflow-hidden">
       {/* PLAN PICKER MODAL */}
       <Modal
         open={planModalOpen}
@@ -1646,7 +1646,7 @@ export default function TVShowTracker() {
       </Modal>
 
       {/* HEADER */}
-      <header className="sticky top-0 z-50 mb-0 bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 pb-2">
+      <header className="flex-shrink-0 px-4 pt-4 pb-2 bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 z-50">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Tv className="w-8 h-8 text-purple-400" />
@@ -2026,8 +2026,9 @@ export default function TVShowTracker() {
           </div>
         </div>
       </header>
+      <div className="flex-1 overflow-y-auto px-4 pb-4">
 
-      {/* SEARCH / ADD */}
+      {/* SEARCH / ADD */
       <div className="mb-8 bg-slate-800 rounded-lg p-6 shadow-xl max-w-3xl mx-auto">
         <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
           <Plus className="w-5 h-5 text-purple-400" />
@@ -2637,6 +2638,7 @@ export default function TVShowTracker() {
             </a>
           </div>
         </div>
+      </div>
       </div>
     </div>
   );
