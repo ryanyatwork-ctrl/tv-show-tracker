@@ -64,7 +64,7 @@ import HelpModal from "./components/HelpModal";
 // -----------------------------
 // Plan / gating
 // -----------------------------
-const FREE_SHOW_LIMIT = 15;
+const FREE_SHOW_LIMIT = 10;
 
 // -----------------------------
 // Stripe price IDs (your live prices)
