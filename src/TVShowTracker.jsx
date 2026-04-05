@@ -2028,7 +2028,7 @@ export default function TVShowTracker() {
       </header>
       <div className="flex-1 overflow-y-auto px-4 pb-4">
 
-      {/* SEARCH / ADD */
+      {/* SEARCH / ADD */}
       <div className="mb-8 bg-slate-800 rounded-lg p-6 shadow-xl max-w-3xl mx-auto">
         <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
           <Plus className="w-5 h-5 text-purple-400" />
