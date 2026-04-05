@@ -1646,7 +1646,7 @@ export default function TVShowTracker() {
       </Modal>
 
       {/* HEADER */}
-      <header className="mb-8">
+      <header className="sticky top-0 z-50 mb-0 bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 pb-2">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Tv className="w-8 h-8 text-purple-400" />
@@ -2149,7 +2149,7 @@ export default function TVShowTracker() {
 
       {/* CATEGORY TABS + CONTROLS */}
       {myShows.length > 0 && (
-        <div className="sticky top-0 z-40 backdrop-blur-md bg-[#0d0d14]/95 pb-3 shadow-lg shadow-black/40" style={{marginLeft: "-1rem", marginRight: "-1rem", paddingLeft: "1rem", paddingRight: "1rem"}}>
+        <div className="sticky top-0 z-30 backdrop-blur-md bg-[#0d0d14]/95 pb-3 shadow-lg shadow-black/40" style={{marginLeft: "-1rem", marginRight: "-1rem", paddingLeft: "1rem", paddingRight: "1rem"}}>
         <div className="max-w-6xl mx-auto space-y-3 pt-2">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3 flex-wrap">
