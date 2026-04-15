@@ -1,6 +1,7 @@
-import React from "react";
-import { Link } from "react-router-dom";
+import React, { useEffect } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import { Check, Tv, Sparkles, Shield } from "lucide-react";
+import { getSupabase } from "../lib/supabase";
 
 const features = [
   { icon: Tv, title: "Track every show", desc: "Unlimited series tracking with season/episode granularity." },
@@ -9,6 +10,18 @@ const features = [
 ];
 
 export default function LandingPage() {
+  const navigate = useNavigate();
+  useEffect(() => {
+    const sp = getSupabase();
+    if (!sp) return;
+    // Give Supabase's detectSessionInUrl a moment to process hash tokens
+    const t = setTimeout(() => {
+      sp.auth.getSession().then(({ data }) => {
+        if (data?.session) navigate("/app", { replace: true });
+      });
+    }, 300);
+    return () => clearTimeout(t);
+  }, [navigate]);
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 text-white">
       <header className="px-6 py-4 flex items-center justify-between border-b border-slate-800/50">
