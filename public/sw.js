@@ -1,4 +1,4 @@
-const CACHE_NAME = 'tvtracker-v1';
+const CACHE_NAME = 'tvtracker-v2';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
