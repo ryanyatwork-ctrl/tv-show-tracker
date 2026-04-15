@@ -699,7 +699,7 @@ export default function TVShowTracker() {
       }
       const { error } = await sp.auth.signInWithOtp({
         email,
-        options: { emailRedirectTo: window.location.origin },
+        options: { emailRedirectTo: window.location.origin + "/#/app" },
       });
       if (error) throw error;
       setEmailMsg("Check your inbox for the sign-in link.");
@@ -727,7 +727,7 @@ export default function TVShowTracker() {
       // Not signed in — normal OAuth flow
       const { error } = await sp.auth.signInWithOAuth({
         provider: "google",
-        options: { redirectTo: window.location.origin },
+        options: { redirectTo: window.location.origin + "/#/app" },
       });
       if (error) throw error;
     } catch (e) {
