@@ -69,8 +69,8 @@ const FREE_SHOW_LIMIT = 10;
 // -----------------------------
 // Stripe price IDs (your live prices)
 // -----------------------------
-const STRIPE_PRICE_MONTHLY = "price_1T1eHjPovynVraMaSGWjmOgp";
-const STRIPE_PRICE_YEARLY = "price_1T1eIRPovynVraMaWdu3MCLx";
+const STRIPE_PRICE_MONTHLY = "price_1TMK0iPovynVraMaDPTPO4qb";
+const STRIPE_PRICE_YEARLY = "price_1TMK08PovynVraMa1zb7BfHB";
 
 // -----------------------------
 // Status model
@@ -435,7 +435,8 @@ export default function TVShowTracker() {
 
   // Plan picker modal
   const [planModalOpen, setPlanModalOpen] = useState(false);
-
+  const [showSignInPrompt, setShowSignInPrompt] = useState(false);
+  const [pendingPlanPicker, setPendingPlanPicker] = useState(false);
   const ensureProfileRow = async (userId) => {
     const sp = getSupabase();
     if (!sp || !userId) return;
@@ -1573,9 +1574,38 @@ export default function TVShowTracker() {
     await pushLibrary(myShows);
   };
 
+  // Auto-reopen plan picker after sign-in completes
+  useEffect(() => {
+    if (userEmail && pendingPlanPicker) {
+      setPendingPlanPicker(false);
+      setPlanModalOpen(true);
+    }
+  }, [userEmail, pendingPlanPicker]);
+
   // ---------- Render ----------
   return (
     <div className="fixed inset-0 flex flex-col bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 text-white overflow-hidden">
+      {/* SIGN-IN PROMPT MODAL */}
+      <Modal
+        open={showSignInPrompt}
+        title="Sign in to upgrade"
+        onClose={() => { setShowSignInPrompt(false); setPendingPlanPicker(false); }}
+      >
+        <div className="text-sm text-slate-200 leading-relaxed">
+          You need an account before upgrading so your purchase stays attached
+          to you across devices. Sign in (top right) and your plan picker will
+          open automatically.
+        </div>
+        <div className="mt-4 flex justify-end">
+          <button
+            onClick={() => { setShowSignInPrompt(false); setPendingPlanPicker(false); }}
+            className="rounded-lg bg-slate-700 hover:bg-slate-600 px-4 py-2 text-sm font-semibold"
+          >
+            Got it
+          </button>
+        </div>
+      </Modal>
+
       {/* PLAN PICKER MODAL */}
       <Modal
         open={planModalOpen}
@@ -1610,7 +1640,6 @@ export default function TVShowTracker() {
         </div>
 
         <div className="mt-3 text-xs text-slate-400">
-          Note: Plan choice is made here (in-app), then we pass the chosen Stripe priceId.
         </div>
       </Modal>
 
@@ -1635,7 +1664,7 @@ export default function TVShowTracker() {
           <button
             onClick={() => {
               setLimitModalOpen(false);
-              setPlanModalOpen(true);
+              if (!userEmail) { setShowSignInPrompt(true); setPendingPlanPicker(true); } else { setPlanModalOpen(true); }
             }}
             disabled={checkoutBusy}
             className="rounded-lg bg-purple-600 hover:bg-purple-700 disabled:opacity-50 px-4 py-2 text-sm font-semibold"
@@ -1659,10 +1688,17 @@ export default function TVShowTracker() {
           </div>
 
           <div className="flex items-center">
-            {isSignedIn && (
+            {isSignedIn ? (
               <span className="hidden md:inline text-xs text-slate-300 mr-3">
                 {userEmail ? `Signed in as ${userEmail}` : "Signed in"}
               </span>
+            ) : (
+              <button
+                onClick={(e) => { e.stopPropagation(); setMenuOpen(true); setShowEmailForm(true); }}
+                className="mr-3 px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium"
+              >
+                Sign in
+              </button>
             )}
 
             {/* Hamburger */}
@@ -1705,7 +1741,7 @@ export default function TVShowTracker() {
                         </div>
                         {!isPaid && (
                           <button
-                            onClick={() => setPlanModalOpen(true)}
+                            onClick={() => { if (!userEmail) { setShowSignInPrompt(true); setPendingPlanPicker(true); } else { setPlanModalOpen(true); } }}
                             disabled={checkoutBusy}
                             className="rounded bg-purple-600 hover:bg-purple-700 disabled:opacity-50 px-3 py-1.5 text-xs font-semibold"
                           >
@@ -1765,6 +1801,7 @@ export default function TVShowTracker() {
                     </div>
                   )}
 
+                  {isSignedIn && (<>
                   {/* Sync */}
                   <div className="px-3 py-2 text-xs text-slate-400 border-b border-slate-700">
                     Sync
@@ -1853,7 +1890,7 @@ export default function TVShowTracker() {
                         Recommendations, ratings, advanced sorting, and genre filter are unlocked with an upgrade.
                         <div className="mt-3">
                           <button
-                            onClick={() => setPlanModalOpen(true)}
+                            onClick={() => { if (!userEmail) { setShowSignInPrompt(true); setPendingPlanPicker(true); } else { setPlanModalOpen(true); } }}
                             disabled={checkoutBusy}
                             className="w-full rounded bg-purple-600 hover:bg-purple-700 disabled:opacity-50 px-3 py-2 text-sm font-medium"
                           >
@@ -2020,6 +2057,7 @@ export default function TVShowTracker() {
                       </a>
                     </div>
                   )}
+                  </>)}
                 </div>
               )}
             </div>
@@ -2050,7 +2088,7 @@ export default function TVShowTracker() {
               </div>
             </div>
             <button
-              onClick={() => setPlanModalOpen(true)}
+              onClick={() => { if (!userEmail) { setShowSignInPrompt(true); setPendingPlanPicker(true); } else { setPlanModalOpen(true); } }}
               disabled={checkoutBusy}
               className="shrink-0 rounded bg-purple-600 hover:bg-purple-700 disabled:opacity-50 px-3 py-2 text-sm font-semibold"
             >
