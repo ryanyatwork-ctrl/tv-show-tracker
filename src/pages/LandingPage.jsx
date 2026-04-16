@@ -101,7 +101,7 @@ export default function LandingPage() {
 
         <p className="text-lg sm:text-xl text-slate-300 mb-8 max-w-3xl mx-auto leading-relaxed">
           {isFlight
-            ? "My wife watched a series on the in-flight entertainment system. When she got home, we only knew the show title and had no reliable way to figure out which episode she had reached. That is why TV Tracker exists."
+            ? "My wife watched a series on the in-flight entertainment system. When she got home, we only knew the show title and had no reliable way to figure out which episodes she had watched. We had to guess—and got it wrong. That is why TV Tracker exists."
             : "TV Tracker is a clean, fast way to remember where you left off across devices, households, travel, and real-world viewing habits."}
         </p>
 
