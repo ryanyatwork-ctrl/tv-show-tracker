@@ -63,11 +63,12 @@ bootstrapAuth().finally(() => {
   console.log("TVTracker booting");
   createRoot(document.getElementById("root")).render(
     <HashRouter>
-      <Routes>
-        <Route path="/" element={<LandingPage />} />
-        <Route path="/app" element={<TVShowTracker />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+     <Routes>
+	<Route path="/" element={<LandingPage />} />
+  	<Route path="/flight" element={<LandingPage />} />
+  	<Route path="/app" element={<TVShowTracker />} />
+ 	<Route path="*" element={<Navigate to="/" replace />} />
+     </Routes>
     </HashRouter>
   );
 });
