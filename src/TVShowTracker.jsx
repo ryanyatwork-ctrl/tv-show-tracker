@@ -394,7 +394,7 @@ function Modal({ open, title, children, onClose }) {
 export default function TVShowTracker() {
   const syncMetaRef = useRef(loadSyncMeta());
   const hasPulledFromCloudRef = useRef(false);
-
+  const scrollContainerRef = useRef(null);
   // ---------- Persistence (local) ----------
   const [myShows, setMyShows] = useState(() => {
     try {
@@ -795,16 +795,23 @@ export default function TVShowTracker() {
   const [menuSupportOpen, setMenuSupportOpen] = useState(false);
 
   // ---------- Scroll-aware sticky header ----------
-  const [hasScrolled, setHasScrolled] = useState(false);
-  const [filtersOpen, setFiltersOpen] = useState(false);
-  useEffect(() => {
-    const onScroll = () => {
-      setHasScrolled(window.scrollY > 80);
-      if (window.scrollY <= 80) setFiltersOpen(false);
-    };
-    window.addEventListener('scroll', onScroll, { passive: true });
-    return () => window.removeEventListener('scroll', onScroll);
-  }, []);
+const [hasScrolled, setHasScrolled] = useState(false);
+const [filtersOpen, setFiltersOpen] = useState(false);
+
+useEffect(() => {
+  const scroller = scrollContainerRef.current;
+  if (!scroller) return;
+
+  const onScroll = () => {
+    setHasScrolled(scroller.scrollTop > 80);
+    if (scroller.scrollTop <= 80) setFiltersOpen(false);
+  };
+
+  scroller.addEventListener("scroll", onScroll, { passive: true });
+  onScroll();
+
+  return () => scroller.removeEventListener("scroll", onScroll);
+}, []);
   const fetchedStreamingRef = useRef(new Set());
 
   useEffect(() => {
@@ -1512,13 +1519,26 @@ export default function TVShowTracker() {
   }, [visibleShows, sortBy, isPaid]);
 
   const jumpToLetter = (letter) => {
-    const el = letterRefs.current[letter];
-    if (!el) return;
-    const stickyBar = document.querySelector(".sticky");
-    const offset = stickyBar ? stickyBar.getBoundingClientRect().height : 80;
-    const top = el.getBoundingClientRect().top + window.scrollY - offset - 8;
-    window.scrollTo({ top, behavior: "smooth" });
-  };
+  const el = letterRefs.current[letter];
+  const scroller = scrollContainerRef.current;
+  if (!el || !scroller) return;
+
+  const stickyBar = scroller.querySelector(".sticky");
+  const offset = stickyBar ? stickyBar.getBoundingClientRect().height : 80;
+
+  const scrollerRect = scroller.getBoundingClientRect();
+  const elRect = el.getBoundingClientRect();
+
+  const targetTop =
+    scroller.scrollTop + (elRect.top - scrollerRect.top) - offset - 8;
+
+  setFiltersOpen(false);
+
+  scroller.scrollTo({
+    top: Math.max(0, targetTop),
+    behavior: "smooth",
+  });
+};
 
   // ---------- Menu sync actions ----------
   const pullFromCloudNow = async () => {
@@ -2064,7 +2084,7 @@ export default function TVShowTracker() {
           </div>
         </div>
       </header>
-      <div className="flex-1 overflow-y-auto px-4 pb-4">
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto px-4 pb-4">
 
       {/* SEARCH / ADD */}
       <div className="mb-8 bg-slate-800 rounded-lg p-6 shadow-xl max-w-3xl mx-auto">
@@ -2324,22 +2344,32 @@ export default function TVShowTracker() {
               return (
                 <React.Fragment key={show.id}>
                   {showLetterAnchor && (
-                    <div
-                      ref={(el) => {
-                        if (el) letterRefs.current[thisLetter] = el;
-                      }}
-                      className="col-span-full flex items-center gap-3 pt-2 pb-1"
-                    >
-                      <span className="text-2xl font-bold text-purple-400 w-8 flex-shrink-0">{thisLetter}</span>
-                      <div className="flex-1 h-px bg-purple-800/50" />
-                      <button
-                        onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
-                        className="text-xs text-purple-500 hover:text-purple-300 transition-colors flex-shrink-0 ml-2 px-2 py-0.5 rounded hover:bg-purple-900/30"
-                      >
-                        ↑ Top
-                      </button>
-                    </div>
-                  )}
+  <div
+    ref={(el) => {
+      if (el) letterRefs.current[thisLetter] = el;
+    }}
+    className="col-span-full flex items-center gap-3 pt-2 pb-1"
+  >
+    <span className="text-2xl font-bold text-purple-400 w-8 flex-shrink-0">
+      {thisLetter}
+    </span>
+
+    <div className="flex-1 h-px bg-purple-800/50" />
+
+    <button
+      onClick={() =>
+        scrollContainerRef.current?.scrollTo({
+          top: 0,
+          behavior: "smooth",
+        })
+      }
+      className="text-xs text-slate-400 hover:text-white transition-colors"
+      title="Back to top"
+    >
+      ↑ Top
+    </button>
+  </div>
+)}
 
                   <article
                     className={`bg-zinc-900 rounded-lg overflow-hidden border border-zinc-800 ${
