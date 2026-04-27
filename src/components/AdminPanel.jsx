@@ -2,6 +2,25 @@ import React, { useEffect, useState } from "react";
 import { X, Users, CheckCircle, Tv, ToggleLeft, ToggleRight, Trash2 } from "lucide-react";
 import { getSupabase } from "../lib/supabase";
 
+async function getFunctionErrorMessage(error, fallback) {
+  const response = error?.context;
+  if (response?.clone) {
+    try {
+      const body = await response.clone().json();
+      if (body?.details) return `${body.error || fallback}: ${body.details}`;
+      if (body?.error) return body.error;
+    } catch {
+      try {
+        const text = await response.clone().text();
+        if (text) return text;
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  return error?.message || fallback;
+}
+
 export default function AdminPanel({ onClose }) {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -18,7 +37,7 @@ export default function AdminPanel({ onClose }) {
     try {
       const sp = getSupabase();
       const { data, error } = await sp.functions.invoke("get-admin-data");
-      if (error) throw error;
+      if (error) throw new Error(await getFunctionErrorMessage(error, "Failed to load admin data"));
       setUsers(data.users || []);
     } catch (e) {
       setError(e.message || "Failed to load admin data");
@@ -36,7 +55,7 @@ export default function AdminPanel({ onClose }) {
       const { error } = await sp.functions.invoke("get-admin-data", {
         body: { user_id: user.id, is_paid: newStatus },
       });
-      if (error) throw error;
+      if (error) throw new Error(await getFunctionErrorMessage(error, "Failed to update"));
       setUsers((prev) => prev.map((u) => u.id === user.id ? { ...u, is_paid: newStatus } : u));
     } catch (e) {
       alert("Failed to update: " + (e.message || "Unknown error"));
@@ -53,7 +72,7 @@ export default function AdminPanel({ onClose }) {
       const { error } = await sp.functions.invoke("get-admin-data", {
         body: { action: "delete", user_id: user.id },
       });
-      if (error) throw error;
+      if (error) throw new Error(await getFunctionErrorMessage(error, "Failed to delete"));
       setUsers((prev) => prev.filter((u) => u.id !== user.id));
     } catch (e) {
       alert("Failed to delete: " + (e.message || "Unknown error"));
