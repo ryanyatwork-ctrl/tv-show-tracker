@@ -1,0 +1,13 @@
+{
+  "relation": [
+    "delegate_permission/common.handle_all_urls"
+  ],
+  "target": {
+    "namespace": "android_app",
+    "package_name": "me.tvtracker.android",
+    "sha256_cert_fingerprints": [
+      "1F:74:01:C6:FB:10:A1:3D:6C:2F:06:26:B1:6C:7B:3A:D3:12:98:F7:48:13:4D:51:21:2B:BD:47:22:16:F8:D9",
+      "CC:AD:49:D5:79:41:BF:80:68:93:7D:DA:9A:24:16:D0:38:DC:0B:0A:79:A6:34:06:18:43:03:62:55:B4:FA:55"
+    ]
+  }
+}
