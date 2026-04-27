@@ -735,18 +735,31 @@ export default function TVShowTracker() {
     }
   };
 
+  const clearSignedInState = () => {
+    setIsSignedIn(false);
+    setUserEmail("");
+    setMyShows([]);
+    setIsPaid(false);
+    setMenuOpen(false);
+    setConflict(null);
+    hasPulledFromCloudRef.current = false;
+    try {
+      localStorage.removeItem("tvShowTrackerData");
+      Object.keys(localStorage)
+        .filter((key) => key.startsWith("sb-") && key.includes("auth-token"))
+        .forEach((key) => localStorage.removeItem(key));
+    } catch {
+      /* ignore */
+    }
+  };
+
   const signOut = async () => {
+    clearSignedInState();
     try {
       const sp = getSupabase();
       if (!sp) return;
       const { error } = await sp.auth.signOut();
       if (error) console.warn("Sign out error:", error);
-      // Clear all local data so the screen resets to default
-      setMyShows([]);
-      setIsPaid(false);
-      setMenuOpen(false);
-      hasPulledFromCloudRef.current = false;
-      try { localStorage.removeItem("tvShowTrackerData"); } catch { /* ignore */ }
     } catch (e) {
       console.error("Sign out failed:", e);
     }
@@ -1771,7 +1784,12 @@ useEffect(() => {
                       </div>
 
                       <button
-                        onClick={signOut}
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          signOut();
+                        }}
                         className="mt-3 w-full rounded bg-slate-700 hover:bg-slate-600 px-3 py-2 text-sm"
                       >
                         Sign out
