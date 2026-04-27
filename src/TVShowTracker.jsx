@@ -2407,6 +2407,7 @@ useEffect(() => {
                           <StreamingBadges
                             result={streamingMap[show.id]}
                             loading={!streamingMap[show.id] && isSignedIn}
+                            source={show.source}
                           />
                         </div>
                         <div className="flex-1">

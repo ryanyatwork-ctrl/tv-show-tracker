@@ -35,7 +35,16 @@ const PLATFORM_COLORS = {
   "YouTube": "#FF0000",
 };
 
-export default function StreamingBadges({ result, loading = false }) {
+function sourceToProviders(source) {
+  if (!source) return [];
+  return source
+    .split(/[,/|]+/)
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map((name) => ({ name, type: "manual", logo: null, link: null }));
+}
+
+export default function StreamingBadges({ result, loading = false, source = "" }) {
   const providers = result?.providers ?? [];
   const fetchedAt = result?.fetched_at;
 
@@ -52,8 +61,9 @@ export default function StreamingBadges({ result, loading = false }) {
     ...providers.filter((p) => p.type === "free"),
     ...providers.filter((p) => p.type === "subscription"),
   ];
+  const displayProviders = prioritized.length ? prioritized : sourceToProviders(source);
 
-  if (!prioritized.length) return null;
+  if (!displayProviders.length) return null;
 
   return (
     <div className="w-full mt-1">
@@ -61,7 +71,7 @@ export default function StreamingBadges({ result, loading = false }) {
         Watch on
       </p>
       <div className="flex flex-wrap gap-1 justify-center">
-        {prioritized.slice(0, 6).map((p) => (
+        {displayProviders.slice(0, 6).map((p) => (
           <div
             key={p.name}
             title={p.name}
@@ -91,15 +101,15 @@ export default function StreamingBadges({ result, loading = false }) {
             )}
           </div>
         ))}
-        {prioritized.length > 6 && (
+        {displayProviders.length > 6 && (
           <div className="w-8 h-8 rounded-lg bg-slate-600 flex items-center justify-center flex-shrink-0">
             <span style={{ fontSize: "9px" }} className="text-slate-300">
-              +{prioritized.length - 6}
+              +{displayProviders.length - 6}
             </span>
           </div>
         )}
       </div>
-      {fetchedAt && (
+      {prioritized.length > 0 && fetchedAt && (
         <p className="text-center text-slate-600 mt-1" style={{ fontSize: "8px" }}>
           Updated {new Date(fetchedAt).toLocaleDateString()}
         </p>
