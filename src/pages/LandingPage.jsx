@@ -15,7 +15,7 @@ import {
 import { getSupabase } from "../lib/supabase";
 
 const youtubeDemoUrl = "https://youtu.be/ybrDLWYOyxs";
-const youtubeEmbedUrl = "https://www.youtube.com/embed/ybrDLWYOyxs";
+const youtubeThumbnailUrl = "https://img.youtube.com/vi/ybrDLWYOyxs/maxresdefault.jpg";
 
 const baseFeatures = [
   {
@@ -483,17 +483,26 @@ export default function LandingPage() {
             </a>
           </div>
 
-          <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl shadow-black/30">
-            <div className="aspect-video">
-              <iframe
-                className="h-full w-full"
-                src={youtubeEmbedUrl}
-                title="TV Tracker demo video"
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                allowFullScreen
-              />
-            </div>
-          </div>
+          <a
+            href={youtubeDemoUrl}
+            target="_blank"
+            rel="noreferrer"
+            aria-label="Watch the TV Tracker demo video on YouTube"
+            className="group relative block overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl shadow-black/30"
+          >
+            <img
+              src={youtubeThumbnailUrl}
+              alt="TV Tracker demo video thumbnail"
+              className="aspect-video h-full w-full object-cover transition duration-300 group-hover:scale-[1.02]"
+              loading="lazy"
+            />
+            <span className="absolute inset-0 bg-slate-950/25 transition group-hover:bg-slate-950/10" />
+            <span className="absolute inset-0 flex items-center justify-center">
+              <span className="flex h-16 w-16 items-center justify-center rounded-full bg-white/95 text-purple-700 shadow-xl transition group-hover:scale-105">
+                <PlayCircle size={34} fill="currentColor" strokeWidth={1.5} />
+              </span>
+            </span>
+          </a>
         </div>
       </section>
 

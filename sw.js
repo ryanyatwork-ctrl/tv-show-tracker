@@ -6,7 +6,7 @@ const STATIC_ASSETS = [
   '/favicon.ico',
 ];
 
-// Install — cache static assets
+// Install - cache static assets
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
@@ -16,7 +16,7 @@ self.addEventListener('install', (event) => {
   self.skipWaiting();
 });
 
-// Activate — clean up old caches
+// Activate - clean up old caches
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
@@ -30,7 +30,7 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
-// Fetch — network first, fall back to cache
+// Fetch - network first, fall back to cache
 self.addEventListener('fetch', (event) => {
   // Skip non-GET and cross-origin requests
   if (event.request.method !== 'GET') return;
@@ -47,7 +47,7 @@ self.addEventListener('fetch', (event) => {
         return response;
       })
       .catch(() => {
-        // Network failed — serve from cache
+        // Network failed - serve from cache
         return caches.match(event.request).then(
           (cached) => cached || caches.match('/index.html')
         );
