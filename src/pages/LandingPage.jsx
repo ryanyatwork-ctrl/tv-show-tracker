@@ -9,9 +9,13 @@ import {
   Search,
   CheckCircle2,
   MonitorSmartphone,
+  PlayCircle,
   X,
 } from "lucide-react";
 import { getSupabase } from "../lib/supabase";
+
+const youtubeDemoUrl = "https://youtu.be/ybrDLWYOyxs";
+const youtubeEmbedUrl = "https://www.youtube.com/embed/ybrDLWYOyxs";
 
 const baseFeatures = [
   {
@@ -451,6 +455,45 @@ export default function LandingPage() {
               </div>
             </button>
           ))}
+        </div>
+      </section>
+
+      <section className="px-6 py-12 max-w-6xl mx-auto">
+        <div className="grid items-center gap-8 lg:grid-cols-[0.9fr_1.1fr]">
+          <div>
+            <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-purple-400/30 bg-purple-500/10 px-4 py-1.5 text-sm font-medium text-purple-200">
+              <PlayCircle size={16} />
+              Watch the demo
+            </div>
+            <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
+              See TV Tracker in action
+            </h2>
+            <p className="mt-4 text-base leading-relaxed text-slate-300 sm:text-lg">
+              See how to sign in, add shows, mark episodes watched, and back up your list in
+              under a minute.
+            </p>
+            <a
+              href={youtubeDemoUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-6 inline-flex items-center gap-2 rounded-lg bg-purple-600 px-5 py-3 font-medium text-white transition hover:bg-purple-700"
+            >
+              <PlayCircle size={18} />
+              Watch on YouTube
+            </a>
+          </div>
+
+          <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl shadow-black/30">
+            <div className="aspect-video">
+              <iframe
+                className="h-full w-full"
+                src={youtubeEmbedUrl}
+                title="TV Tracker demo video"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                allowFullScreen
+              />
+            </div>
+          </div>
         </div>
       </section>
 
